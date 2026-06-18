@@ -389,7 +389,7 @@ Search history persists previous queries. Users revisit any past query with one 
 
 For explicit ordered collections, users can create static playlists (ordered reference lists). But the main workflow is query-driven.
 
-### 7.2 Import/Export
+### 7.2 Import
 
 **M3U vs M3U8 distinction:** Do not rely on file extension. Content-sniff the file: if it contains `#EXT-X-` directives, it is an HLS manifest (M3U8) — hand it directly to mpv, do not parse. Otherwise, treat it as a simple M3U playlist catalog.
 
@@ -406,8 +406,6 @@ For explicit ordered collections, users can create static playlists (ordered ref
 6. Imported playlists are static ordered lists (order preserved via `import_order`)
 
 **Spotify import:** Not supported (DRM-protected, yt-dlp cannot handle it). Leave to future plugins.
-
-**Exporting:** Resolve IDs → metadata snapshot → output format-specific export. Export is projection, not transformation.
 
 ---
 
