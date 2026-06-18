@@ -1,5 +1,6 @@
 mod models;
 mod infra;
+mod features;
 
 pub use models::*;
 pub use infra::*;

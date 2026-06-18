@@ -27,4 +27,5 @@ sea-orm = { version = "1", features = ["sqlx-sqlite", "macros", "runtime-tokio"]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 walkdir = "2"
+lofty = "0.21"
 tokio = { version = "1", features = ["process", "sync", "time", "rt", "macros"] }
