@@ -22,4 +22,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
+blake3 = "1"
+sea-orm = { version = "1", features = ["sqlx-sqlite", "macros", "runtime-tokio"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+walkdir = "2"
+tokio = { version = "1", features = ["process", "sync", "time", "rt", "macros"] }

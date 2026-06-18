@@ -1,6 +1,8 @@
 mod models;
+mod infra;
 
 pub use models::*;
+pub use infra::*;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
