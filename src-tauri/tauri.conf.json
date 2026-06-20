@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "vide",
-        "width": 800,
-        "height": 600
+        "title": "Vide",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": false
       }
     ],
     "security": {

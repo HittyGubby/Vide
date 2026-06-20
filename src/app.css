@@ -1,0 +1,126 @@
+/* ── Reset & Base ─────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  font-family:
+    'Segoe UI', 'SF Pro Display', -apple-system, BlinkMacSystemFont,
+    'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Helvetica Neue',
+    sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  cursor: default;
+}
+
+/* ── Theme Variables ──────────────────────────────────── */
+:root {
+  /* Background hierarchy */
+  --bg-base: #0f0f0f;
+  --bg-surface: #1a1a1a;
+  --bg-elevated: #252525;
+  --bg-hover: #2a2a2a;
+  --bg-active: #333333;
+  --bg-input: #1e1e1e;
+
+  /* Borders */
+  --border-subtle: #2a2a2a;
+  --border-normal: #383838;
+
+  /* Text hierarchy */
+  --text-primary: #e8e8e8;
+  --text-secondary: #999999;
+  --text-tertiary: #666666;
+  --text-link: #5b9aff;
+
+  /* Accent colors */
+  --accent-primary: #5b9aff;
+  --accent-hover: #4a88e8;
+  --accent-active: #3a78d8;
+  --accent-surface: rgba(91, 154, 255, 0.1);
+
+  /* Status colors */
+  --status-success: #4caf50;
+  --status-warning: #ff9800;
+  --status-error: #f44336;
+
+  /* Layout sizing */
+  --titlebar-height: 38px;
+  --sidebar-width: 48px;
+  --playerbar-height: 64px;
+
+  /* Scrollbar */
+  --scrollbar-width: 8px;
+  --scrollbar-thumb: #444;
+  --scrollbar-track: transparent;
+}
+
+/* ── Scrollbar ────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* ── Selection ────────────────────────────────────────── */
+::selection {
+  background: var(--accent-primary);
+  color: white;
+}
+
+/* ── Focus ring ───────────────────────────────────────── */
+:focus-visible {
+  outline: 1px solid var(--accent-primary);
+  outline-offset: -1px;
+}
+
+/* ── Input reset ──────────────────────────────────────── */
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  outline: none;
+}
+
+button {
+  cursor: pointer;
+  user-select: none;
+}
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+}
+
+/* ── Utility ──────────────────────────────────────────── */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

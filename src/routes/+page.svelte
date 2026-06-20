@@ -1,156 +1,198 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { Search, ArrowUpDown, Tag } from "lucide-svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
-
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
-  }
+  const columns = [
+    { id: "title", label: "标题", width: "2fr" },
+    { id: "artist", label: "歌手", width: "1.5fr" },
+    { id: "album", label: "专辑", width: "1.5fr" },
+    { id: "tags", label: "标签", width: "1.5fr" },
+    { id: "duration", label: "时长", width: "70px" },
+  ];
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
-
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+<div class="library-view">
+  <!-- Local search bar -->
+  <div class="search-bar">
+    <div class="search-input-wrapper">
+      <span class="search-icon">
+        <Search size={14} />
+      </span>
+      <input
+        type="text"
+        class="local-search"
+        placeholder="搜索我的音乐... (留空 = 我的库)"
+      />
+    </div>
+    <button class="sort-btn" title="排序">
+      <ArrowUpDown size={14} />
+      <span class="sort-label">排序</span>
+    </button>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+  <!-- Song table header -->
+  <div class="table-header" role="row">
+    <div class="col col-index">#</div>
+    {#each columns as col}
+      <div
+        class="col"
+        style="flex: {col.width}"
+        role="columnheader"
+        title="{col.label} — 点击排序"
+      >
+        <span>{col.label}</span>
+      </div>
+    {/each}
+  </div>
+
+  <!-- Empty state -->
+  <div class="empty-state">
+    <div class="empty-icon">
+      <Tag size={32} />
+    </div>
+    <p class="empty-title">还没有歌曲</p>
+    <p class="empty-desc">添加库目录或导入播放列表开始使用</p>
+  </div>
+</div>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  .library-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
   }
 
-  a:hover {
-    color: #24c8db;
+  /* ── Search Bar ──────────────────────────────────── */
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-subtle);
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .search-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    height: 30px;
+    padding: 0 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    transition: border-color 0.15s;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  .search-input-wrapper:focus-within {
+    border-color: var(--accent-primary);
+  }
+
+  .search-icon {
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .local-search {
+    flex: 1;
+    height: 100%;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+    user-select: text;
+  }
+
+  .local-search::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .sort-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    font-size: 12px;
+    white-space: nowrap;
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+
+  .sort-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .sort-label {
+    display: none;
+  }
+
+  /* ── Table Header ────────────────────────────────── */
+  .table-header {
+    display: flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 12px 0 8px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .col {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+    min-width: 0;
+  }
+
+  .col:hover {
+    color: var(--text-secondary);
+  }
+
+  .col-index {
+    width: 36px;
+    flex: none;
+    text-align: center;
+  }
+
+  /* ── Empty State ─────────────────────────────────── */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 40px;
+    color: var(--text-tertiary);
+  }
+
+  .empty-icon {
+    opacity: 0.4;
+    margin-bottom: 4px;
+  }
+
+  .empty-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .empty-desc {
+    font-size: 12px;
+    text-align: center;
+    max-width: 240px;
+    line-height: 1.5;
+  }
 </style>
