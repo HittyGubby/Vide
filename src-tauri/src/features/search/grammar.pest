@@ -1,0 +1,43 @@
+// ── Vide Search Query Grammar ───────────────────────────────────────
+//
+// Supported query syntax:
+//   country:russia                  // tag filter
+//   title CONTAINS "hello"          // text filter
+//   genre:pop AND mood:dark         // boolean AND
+//   country:russia OR genre:pop     // boolean OR
+//   NOT genre:pop                   // negation
+//   (a OR b) AND c                  // grouping
+
+query = { SOI ~ expr ~ EOI }
+expr = { or_expr }
+
+or_expr  = { and_expr ~ (or_op ~ and_expr)* }
+and_expr = { atom ~ (and_op ~ atom)* }
+
+or_op  = { "OR" }
+and_op = { "AND" }
+
+atom = { paren_expr | not_expr | filter }
+
+paren_expr = { "(" ~ expr ~ ")" }
+not_expr   = { not_op ~ atom }
+not_op     = { "NOT" | "!" }
+
+filter = { tag_filter | text_filter }
+
+tag_filter = { ident ~ ":" ~ tag_value }
+tag_value  = { ident | quoted_string }
+
+text_filter = { field ~ "CONTAINS" ~ quoted_string }
+
+field = {
+    "title" | "artist" | "album" | "source" | "path"
+    | "added_time" | "duration" | "import_order" | "import_source"
+}
+
+ident = @{ (ASCII_ALPHA | ASCII_DIGIT | "_" | "-" | ".")+ }
+
+quoted_string = @{ "\"" ~ (escape | (!("\"" | "\\") ~ ANY))* ~ "\"" }
+escape = @{ "\\" ~ ANY }
+
+WHITESPACE = _{ " " | "\t" }
