@@ -5,6 +5,8 @@
   import Sidebar from "$lib/components/layout/Sidebar.svelte";
   import ProgressBar from "$lib/components/layout/ProgressBar.svelte";
   import PlayerBar from "$lib/components/layout/PlayerBar.svelte";
+  import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
+  import { ui } from "$lib/stores/ui.svelte";
 
   let { children } = $props();
 
@@ -78,6 +80,10 @@
   <ProgressBar />
   <PlayerBar />
 </div>
+
+{#if ui.showPlayerDetail}
+  <PlayerDetail />
+{/if}
 
 <style>
   .app-shell {

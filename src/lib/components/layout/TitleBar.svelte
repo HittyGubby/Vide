@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { Search } from "lucide-svelte";
+  import { Search, ChevronDown } from "lucide-svelte";
+  import { ui } from "$lib/stores/ui.svelte";
 
   const appWindow = getCurrentWindow();
 
@@ -56,6 +57,17 @@
       />
     </div>
   </div>
+
+  {#if ui.showPlayerDetail}
+    <button
+      class="back-btn"
+      onclick={() => (ui.showPlayerDetail = false)}
+      title="收起"
+    >
+      <ChevronDown size={16} />
+      <span>收起</span>
+    </button>
+  {/if}
 
   <div class="window-controls">
     <button class="win-btn" onclick={minimize} aria-label="最小化">
@@ -187,6 +199,28 @@
 
   .search-input::placeholder {
     color: var(--text-tertiary);
+  }
+
+  /* ── Back Button (player detail) ──────────────────── */
+  .back-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 12px;
+    height: 100%;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    font-size: 12px;
+    transition:
+      background 0.1s,
+      color 0.1s;
+    -webkit-app-region: no-drag;
+  }
+
+  .back-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   /* ── Window Controls ────────────────────────────────── */

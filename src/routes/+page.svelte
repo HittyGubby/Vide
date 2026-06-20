@@ -1,11 +1,22 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { Search, Tag, Play } from "lucide-svelte";
+  import { Search, Tag, Play, Download, ListPlus } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
+  import { searchStore } from "$lib/stores/search.svelte";
+  import SearchHistory from "$lib/components/search/SearchHistory.svelte";
+  import TagEditor from "$lib/components/tag/TagEditor.svelte";
+  import ContextMenu from "$lib/components/song/ContextMenu.svelte";
   import type { Song } from "$lib/types";
+  import type { MenuItem } from "$lib/components/song/ContextMenu.svelte";
 
-  const columns = [
+  interface ColumnDef {
+    id: string;
+    label: string;
+    width: string;
+  }
+
+  const ALL_COLUMNS: ColumnDef[] = [
     { id: "title", label: "标题", width: "2fr" },
     { id: "artist", label: "歌手", width: "1.5fr" },
     { id: "album", label: "专辑", width: "1.5fr" },
@@ -20,6 +31,8 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let currentMediaId = $state<string | null>(null);
+  let showHistory = $state(false);
+  let historyTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
     loadSongs();
@@ -128,6 +141,249 @@
   function isPlaying(song: Song): boolean {
     return currentMediaId === song.id;
   }
+
+  // ── Tag Editing ────────────────────────────────────
+
+  let editingSong = $state<Song | null>(null);
+
+  function openTagEditor(song: Song, e: MouseEvent) {
+    e.stopPropagation();
+    editingSong = song;
+  }
+
+  function closeTagEditor() {
+    songs = songs;
+    editingSong = null;
+  }
+
+  // ── Column Order & Visibility ───────────────────────
+
+  const COL_KEY = "vide_columns";
+
+  function loadColumnState() {
+    try {
+      const saved = localStorage.getItem(COL_KEY);
+      if (saved) {
+        const data = JSON.parse(saved);
+        return {
+          order: data.order as string[],
+          visible: data.visible as Record<string, boolean>,
+        };
+      }
+    } catch {
+      /* ignore */
+    }
+    return {
+      order: ALL_COLUMNS.map((c) => c.id),
+      visible: Object.fromEntries(ALL_COLUMNS.map((c) => [c.id, true])),
+    };
+  }
+
+  const initialState = loadColumnState();
+  let columnOrder = $state<string[]>(initialState.order);
+  let columnVisible = $state<Record<string, boolean>>(initialState.visible);
+
+  let visibleColumns = $derived(
+    columnOrder
+      .filter((id) => columnVisible[id])
+      .map((id) => ALL_COLUMNS.find((c) => c.id === id)!),
+  );
+
+  function saveColumnState() {
+    try {
+      localStorage.setItem(
+        COL_KEY,
+        JSON.stringify({ order: columnOrder, visible: columnVisible }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // ── Column Drag & Drop ────────────────────────────────
+
+  let dragColId = $state<string | null>(null);
+
+  function handleDragStart(id: string) {
+    dragColId = id;
+  }
+
+  function handleDragOver(e: DragEvent, id: string) {
+    e.preventDefault();
+    if (dragColId && dragColId !== id) {
+      (e.currentTarget as HTMLElement).classList.add("drop-target");
+    }
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    (e.currentTarget as HTMLElement).classList.remove("drop-target");
+  }
+
+  function handleDrop(e: DragEvent, targetId: string) {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).classList.remove("drop-target");
+    if (!dragColId || dragColId === targetId) return;
+    const fromIdx = columnOrder.indexOf(dragColId);
+    const toIdx = columnOrder.indexOf(targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const newOrder = [...columnOrder];
+    newOrder.splice(fromIdx, 1);
+    newOrder.splice(toIdx, 0, dragColId);
+    columnOrder = newOrder;
+    dragColId = null;
+    saveColumnState();
+  }
+
+  function handleDragEnd() {
+    dragColId = null;
+  }
+
+  // ── Column Header Context Menu ────────────────────────
+
+  let colMenu = $state<{ x: number; y: number } | null>(null);
+  let colMenuItems = $state<MenuItem[]>([]);
+
+  function openColMenu(e: MouseEvent, col: ColumnDef) {
+    e.preventDefault();
+    const items: MenuItem[] = ALL_COLUMNS.map((c) => ({
+      label: c.label,
+      action: () => {
+        columnVisible[c.id] = !columnVisible[c.id];
+        // Ensure at least one column remains visible
+        const remaining = Object.values(columnVisible).filter(Boolean).length;
+        if (remaining === 0) columnVisible[c.id] = true;
+        columnVisible = { ...columnVisible };
+        saveColumnState();
+      },
+    }));
+    items.push({ label: "", action: () => {}, divider: true });
+    items.push({
+      label: "重置列布局",
+      action: () => {
+        columnOrder = ALL_COLUMNS.map((c) => c.id);
+        columnVisible = Object.fromEntries(
+          ALL_COLUMNS.map((c) => [c.id, true]),
+        );
+        saveColumnState();
+      },
+    });
+
+    colMenuItems = items.map((it) => ({
+      ...it,
+      label: columnVisible[it.label] ? `✓ ${it.label}` : `  ${it.label}`,
+    }));
+    // Rebuild with checked indicators
+    colMenuItems = ALL_COLUMNS.map((c) => ({
+      label: columnVisible[c.id] ? `✓ ${c.label}` : `  ${c.label}`,
+      action: () => {
+        columnVisible[c.id] = !columnVisible[c.id];
+        const remaining = Object.values(columnVisible).filter(Boolean).length;
+        if (remaining === 0) columnVisible[c.id] = true;
+        columnVisible = { ...columnVisible };
+        saveColumnState();
+      },
+    }));
+    colMenuItems.push({ label: "", action: () => {}, divider: true });
+    colMenuItems.push({
+      label: "重置列布局",
+      action: () => {
+        columnOrder = ALL_COLUMNS.map((c) => c.id);
+        columnVisible = Object.fromEntries(
+          ALL_COLUMNS.map((c) => [c.id, true]),
+        );
+        saveColumnState();
+      },
+    });
+
+    colMenu = { x: e.clientX, y: e.clientY };
+  }
+
+  // ── Song Right-Click Context Menu ─────────────────────
+
+  let ctxSong = $state<Song | null>(null);
+  let ctxPos = $state<{ x: number; y: number } | null>(null);
+
+  function openContextMenu(song: Song, e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    ctxSong = song;
+    ctxPos = { x: e.clientX, y: e.clientY };
+  }
+
+  function closeContextMenu() {
+    ctxSong = null;
+    ctxPos = null;
+  }
+
+  let contextMenuItems = $derived.by(() => {
+    if (!ctxSong) return [];
+    return [
+      {
+        label: "播放",
+        icon: Play,
+        action: () => playSong(ctxSong!),
+      },
+      {
+        label: "编辑标签",
+        icon: Tag,
+        action: () => {
+          editingSong = ctxSong;
+        },
+      },
+      { label: "", action: () => {}, icon: undefined, divider: true },
+      {
+        label: "下载",
+        icon: Download,
+        action: () => {},
+        disabled: true,
+      },
+      {
+        label: "添加到播放列表",
+        icon: ListPlus,
+        action: () => {},
+        disabled: true,
+      },
+    ] as MenuItem[];
+  });
+
+  // ── Search History ──────────────────────────────────
+
+  function handleSearchInput(e: Event) {
+    const target = e.target as HTMLInputElement;
+    query = target.value;
+    if (target.value) {
+      showHistory = false;
+    }
+  }
+
+  function handleSearchFocus() {
+    clearTimeout(historyTimer);
+    if (!query.trim()) {
+      showHistory = searchStore.history.length > 0;
+    }
+  }
+
+  function handleSearchBlur() {
+    historyTimer = setTimeout(() => {
+      showHistory = false;
+    }, 200);
+  }
+
+  function handleSearchKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      if (query.trim()) {
+        searchStore.add(query);
+        showHistory = false;
+      }
+    } else if (e.key === "Escape") {
+      showHistory = false;
+    }
+  }
+
+  function selectHistory(q: string) {
+    query = q;
+    showHistory = false;
+  }
 </script>
 
 <div class="library-view">
@@ -137,12 +393,24 @@
       <span class="search-icon">
         <Search size={14} />
       </span>
-      <input
-        type="text"
-        class="local-search"
-        placeholder="搜索我的音乐... (留空 = 我的库)"
-        bind:value={query}
-      />
+      <div class="search-field">
+        <input
+          type="text"
+          class="local-search"
+          placeholder="搜索我的音乐... (留空 = 我的库)"
+          value={query}
+          oninput={handleSearchInput}
+          onfocus={handleSearchFocus}
+          onblur={handleSearchBlur}
+          onkeydown={handleSearchKeydown}
+        />
+        {#if showHistory}
+          <SearchHistory
+            onselect={selectHistory}
+            onclose={() => (showHistory = false)}
+          />
+        {/if}
+      </div>
     </div>
     {#if filteredSongs.length > 0}
       <span class="song-count">{filteredSongs.length}</span>
@@ -152,11 +420,19 @@
   <!-- Song table header -->
   <div class="table-header" role="row">
     <div class="col col-index">#</div>
-    {#each columns as col}
+    {#each visibleColumns as col}
       <button
         class="col"
+        class:dragging={dragColId === col.id}
         style="flex: {col.width}"
+        draggable="true"
         onclick={() => toggleSort(col.id)}
+        oncontextmenu={(e) => openColMenu(e, col)}
+        ondragstart={() => handleDragStart(col.id)}
+        ondragover={(e) => handleDragOver(e, col.id)}
+        ondragleave={handleDragLeave}
+        ondrop={(e) => handleDrop(e, col.id)}
+        ondragend={handleDragEnd}
         class:col-active={sortField === col.id}
       >
         {col.label}{sortIndicator(col.id)}
@@ -199,6 +475,7 @@
           class:playing={isPlaying(song)}
           onclick={() => playSong(song)}
           ondblclick={() => playSong(song)}
+          oncontextmenu={(e) => openContextMenu(song, e)}
         >
           <div class="col col-index">
             {#if isPlaying(song)}
@@ -207,26 +484,61 @@
               {i + 1}
             {/if}
           </div>
-          <div class="col" style="flex: 2fr">
-            <span class="truncate song-title-cell">{song.title}</span>
-          </div>
-          <div class="col" style="flex: 1.5fr">
-            <span class="truncate">{song.artist}</span>
-          </div>
-          <div class="col" style="flex: 1.5fr">
-            <span class="truncate">{song.album}</span>
-          </div>
-          <div class="col" style="flex: 1.5fr">
-            <span class="truncate tags-cell">{displayTags(song)}</span>
-          </div>
-          <div class="col col-duration">
-            {formatDuration(song.metadata.duration)}
-          </div>
+          {#each visibleColumns as col}
+            <div class="col" style="flex: {col.width}">
+              {#if col.id === "title"}
+                <span class="truncate song-title-cell">{song.title}</span>
+              {:else if col.id === "artist"}
+                <span class="truncate">{song.artist}</span>
+              {:else if col.id === "album"}
+                <span class="truncate">{song.album}</span>
+              {:else if col.id === "tags"}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="tags-btn"
+                  role="button"
+                  tabindex="0"
+                  onclick={(e) => openTagEditor(song, e)}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ")
+                      openTagEditor(song, e as any);
+                  }}
+                >
+                  <span class="truncate tags-cell">{displayTags(song)}</span>
+                </div>
+              {:else if col.id === "duration"}
+                <span>{formatDuration(song.metadata.duration)}</span>
+              {/if}
+            </div>
+          {/each}
         </button>
       {/each}
     </div>
   {/if}
 </div>
+
+{#if editingSong}
+  <TagEditor song={editingSong} onclose={closeTagEditor} />
+{/if}
+
+{#if ctxPos && contextMenuItems.length > 0}
+  <ContextMenu
+    items={contextMenuItems}
+    x={ctxPos.x}
+    y={ctxPos.y}
+    onclose={closeContextMenu}
+  />
+{/if}
+
+{#if colMenu}
+  <ContextMenu
+    items={colMenuItems}
+    x={colMenu.x}
+    y={colMenu.y}
+    onclose={() => (colMenu = null)}
+  />
+{/if}
 
 <style>
   .library-view {
@@ -259,6 +571,12 @@
 
   .search-input-wrapper:focus-within {
     border-color: var(--accent-primary);
+  }
+
+  .search-field {
+    position: relative;
+    flex: 1;
+    height: 100%;
   }
 
   .search-icon {
@@ -331,6 +649,25 @@
     color: var(--accent-primary) !important;
   }
 
+  .col.dragging {
+    opacity: 0.5;
+  }
+
+  .drop-target {
+    position: relative;
+  }
+
+  .drop-target::after {
+    content: "";
+    position: absolute;
+    right: -2px;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--accent-primary);
+    border-radius: 1px;
+  }
+
   .col-index {
     width: 36px;
     flex: none;
@@ -389,6 +726,18 @@
   .tags-cell {
     font-size: 11px;
     color: var(--text-secondary);
+  }
+
+  .tags-btn {
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.1s;
+    padding: 2px 4px;
+    margin: -2px -4px;
+  }
+
+  .tags-btn:hover {
+    background: var(--accent-surface);
   }
 
   /* ── Empty State ─────────────────────────────────── */

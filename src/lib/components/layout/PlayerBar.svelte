@@ -10,6 +10,7 @@
     Volume2,
     Tag,
   } from "lucide-svelte";
+  import { ui } from "$lib/stores/ui.svelte";
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -43,7 +44,7 @@
 <footer class="playerbar">
   <!-- Left: Album art + song info -->
   <div class="player-left">
-    <div class="album-art">
+    <div class="album-art" onclick={() => (ui.showPlayerDetail = true)}>
       {#if player.mediaId && player.isPlaying}
         <span class="equalizer">𝅘𝅥𝅮</span>
       {:else}
