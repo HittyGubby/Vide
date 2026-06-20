@@ -13,17 +13,15 @@
       if (!cancelled) isMaximized = m;
     });
 
-    const u1 = appWindow.onMaximized(() => {
-      if (!cancelled) isMaximized = true;
-    });
-    const u2 = appWindow.onUnmaximized(() => {
-      if (!cancelled) isMaximized = false;
+    const unlisten = appWindow.onResized(async () => {
+      if (!cancelled) {
+        isMaximized = await appWindow.isMaximized();
+      }
     });
 
     return () => {
       cancelled = true;
-      u1.then((fn) => fn());
-      u2.then((fn) => fn());
+      unlisten.then((fn) => fn());
     };
   });
 
@@ -45,7 +43,7 @@
     <span class="app-logo">Vide</span>
   </div>
 
-  <div class="search-area">
+  <div class="search-area" style="-webkit-app-region: no-drag">
     <div class="search-inner">
       <span class="search-icon">
         <Search size={14} />
