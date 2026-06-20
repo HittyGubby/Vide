@@ -7,3 +7,4 @@ pub mod search;
 pub mod plugin;
 pub mod player;
 pub mod network;
+pub mod ui;

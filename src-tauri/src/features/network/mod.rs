@@ -69,6 +69,11 @@ impl NetworkManager {
         Ok(())
     }
 
+    /// Check if the server is currently running.
+    pub fn is_running(&self) -> bool {
+        self.shutdown_tx.is_some()
+    }
+
     /// Shut down the HTTP server.
     pub async fn stop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {

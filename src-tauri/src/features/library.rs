@@ -7,6 +7,7 @@ use crate::infra::db::Database;
 use crate::infra::fs::scan_directory;
 use crate::infra::hash::{quick_hash, song_id_from_file, QuickHash};
 use crate::models::song::Song;
+use serde::Serialize;
 use crate::models::SongMetadata;
 
 /// Supported audio file extensions.
@@ -15,7 +16,7 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 /// Result of a library scan.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct ScanResult {
     pub scanned: u64,
     pub added: u64,
