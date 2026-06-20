@@ -27,7 +27,13 @@ sea-orm = { version = "1", features = ["sqlx-sqlite", "macros", "runtime-tokio"]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 walkdir = "2"
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
 lofty = "0.21"
 pest = "2"
 pest_derive = "2"
 tokio = { version = "1", features = ["process", "sync", "time", "rt", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+mime_guess = "2"
+tokio-util = { version = "0.7", features = ["io"] }
