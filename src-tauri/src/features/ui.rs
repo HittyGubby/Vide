@@ -1,8 +1,9 @@
 use crate::app::AppState;
 use crate::features::library::ScanResult;
 use crate::features::player::PlaybackStatus;
+use crate::features::search::fuzzy::FuzzyMatch;
 use crate::models::song::{Song, SongId};
-use crate::models::tag::Tag;
+use crate::models::tag::{MetaTag, Tag};
 
 // ── Library ───────────────────────────────────────────────────────
 
@@ -92,7 +93,38 @@ pub async fn stop_playback(state: tauri::State<'_, AppState>) -> Result<Playback
     Ok(player.stop().await)
 }
 
+// ── Search ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn fuzzy_search_songs(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<Vec<FuzzyMatch>, String> {
+    crate::features::search::fuzzy_search_songs(&*state.db, &query)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn autocomplete(
+    state: tauri::State<'_, AppState>,
+    prefix: String,
+) -> Result<Vec<String>, String> {
+    crate::features::search::autocomplete(&*state.db, &prefix, 10)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Tags ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_meta_tags(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<MetaTag>, String> {
+    crate::features::tags::get_meta_tags(&*state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub async fn add_tag(
@@ -157,6 +189,21 @@ pub async fn get_playlist(
         .get_playlist(&crate::models::playlist::PlaylistId(id))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: String,
+    output_path: String,
+) -> Result<(), String> {
+    crate::features::playlist::export_playlist(
+        &*state.db,
+        &crate::models::playlist::PlaylistId(playlist_id),
+        std::path::Path::new(&output_path),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 // ── Server ────────────────────────────────────────────────────────

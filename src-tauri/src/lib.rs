@@ -38,19 +38,29 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
+            // Library
             features::ui::list_songs,
             features::ui::get_song,
             features::ui::search_songs,
             features::ui::scan_library,
+            // Playback
             features::ui::get_player_status,
             features::ui::play_song,
             features::ui::stop_playback,
+            // Search
+            features::ui::fuzzy_search_songs,
+            features::ui::autocomplete,
+            // Tags
+            features::ui::get_meta_tags,
             features::ui::add_tag,
             features::ui::remove_tag,
             features::ui::get_song_tags,
             features::ui::get_namespaces,
+            // Playlists
             features::ui::import_m3u,
             features::ui::get_playlist,
+            features::ui::export_playlist,
+            // Server
             features::ui::start_server,
             features::ui::stop_server,
             features::ui::get_server_status,

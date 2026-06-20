@@ -1,7 +1,8 @@
+use serde::Serialize;
 use crate::models::song::Song;
 
 /// Result of a fuzzy search.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FuzzyMatch {
     pub song: Song,
     pub score: u32,

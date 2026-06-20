@@ -16,9 +16,11 @@ use crate::models::{
 pub struct M3uEntry {
     /// Resolved file path or URL.
     pub target: String,
-    /// Optional duration in seconds from #EXTINF.
+    /// Optional duration in seconds from #EXTINF (parsed but available for importers).
+    #[allow(dead_code)]
     pub duration: Option<u64>,
-    /// Optional title from #EXTINF.
+    /// Optional title from #EXTINF (parsed but available for importers).
+    #[allow(dead_code)]
     pub title: Option<String>,
 }
 
