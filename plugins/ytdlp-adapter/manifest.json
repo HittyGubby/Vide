@@ -1,0 +1,13 @@
+{
+  "name": "ytdlp-adapter",
+  "version": "1.0.0",
+  "exec": ["python3", "adapter.py"],
+  "capabilities": [
+    { "type": "search", "platform": "youtube" },
+    { "type": "search", "platform": "bilibili" },
+    { "type": "metadata", "platform": "youtube" },
+    { "type": "metadata", "platform": "bilibili" },
+    { "type": "stream", "platform": "youtube" },
+    { "type": "stream", "platform": "bilibili" }
+  ]
+}

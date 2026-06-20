@@ -1,8 +1,10 @@
 use crate::app::AppState;
 use crate::features::library::ScanResult;
 use crate::features::player::PlaybackStatus;
+use crate::features::plugin::types::SearchResultItem;
 use crate::features::search::fuzzy::FuzzyMatch;
-use crate::models::song::{Song, SongId};
+use crate::infra::hash::song_id_from_source;
+use crate::models::song::{Song, SongId, SongMetadata, Source};
 use crate::models::tag::{MetaTag, Tag};
 
 // ── Library ───────────────────────────────────────────────────────
@@ -74,11 +76,19 @@ pub async fn play_song(
         .ok_or_else(|| "song not found".to_string())?;
 
     let descriptor = if let Some(path) = song.paths.first() {
+        // Local file — play directly
         crate::features::plugin::types::StreamDescriptor::UrlStream {
             id,
             url: path.to_string_lossy().to_string(),
             headers: None,
         }
+    } else if let Some(source) = song.sources.first() {
+        // Online source — resolve stream via plugin
+        let plugins = state
+            .plugins
+            .as_ref()
+            .ok_or_else(|| "plugin system not available".to_string())?;
+        plugins.stream(&source.platform, &source.id, &id).await?
     } else {
         return Err("no playable source found".to_string());
     };
@@ -91,6 +101,94 @@ pub async fn play_song(
 pub async fn stop_playback(state: tauri::State<'_, AppState>) -> Result<PlaybackStatus, String> {
     let mut player = state.player.lock().await;
     Ok(player.stop().await)
+}
+
+// ── Online Plugin Search ──────────────────────────────────────────
+
+#[tauri::command]
+pub async fn search_online(
+    state: tauri::State<'_, AppState>,
+    query: String,
+    platform: Option<String>,
+) -> Result<Vec<SearchResultItem>, String> {
+    let plugins = state
+        .plugins
+        .as_ref()
+        .ok_or_else(|| "plugin system not available".to_string())?;
+
+    if let Some(platform) = platform {
+        plugins.search(&platform, &query).await
+    } else {
+        // Search all platforms that have a registered search provider
+        let mut all_results = Vec::new();
+        for manifest in &plugins.manifests {
+            for cap in &manifest.capabilities {
+                if cap.capability == "search" {
+                    if let Ok(mut results) = plugins.search(&cap.platform, &query).await {
+                        all_results.append(&mut results);
+                    }
+                }
+            }
+        }
+        Ok(all_results)
+    }
+}
+
+/// Resolve an online song by platform + id, creating a Song in the DB if
+/// it does not already exist.
+#[tauri::command]
+pub async fn resolve_song(
+    state: tauri::State<'_, AppState>,
+    platform: String,
+    id: String,
+) -> Result<Song, String> {
+    let song_id = song_id_from_source(&platform, &id);
+
+    // Return existing song if already in DB
+    if let Some(song) = state
+        .db
+        .get_song(&song_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(song);
+    }
+
+    // Resolve metadata via plugin
+    let plugins = state
+        .plugins
+        .as_ref()
+        .ok_or_else(|| "plugin system not available".to_string())?;
+    let item = plugins.resolve(&platform, &id).await?;
+
+    let title = item.title.clone();
+    let artist = item.artist.clone().unwrap_or_else(|| "Unknown".to_string());
+    let album = item.album.clone().unwrap_or_else(|| "Unknown".to_string());
+
+    let song = Song {
+        id: song_id,
+        title,
+        artist,
+        album,
+        tags: Vec::new(),
+        sources: vec![Source {
+            platform,
+            id,
+        }],
+        paths: Vec::new(),
+        metadata: SongMetadata {
+            duration: item.duration,
+            ..Default::default()
+        },
+    };
+
+    state
+        .db
+        .upsert_song(&song)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(song)
 }
 
 // ── Search ───────────────────────────────────────────────────────

@@ -52,6 +52,7 @@ pub struct PluginManifest {
 pub enum StreamDescriptor {
     #[serde(rename = "url_stream")]
     UrlStream {
+        #[serde(default)]
         id: String,
         url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +60,7 @@ pub enum StreamDescriptor {
     },
     #[serde(rename = "stream")]
     Pipe {
+        #[serde(default)]
         id: String,
         exec: StreamExec,
     },

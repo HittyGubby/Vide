@@ -47,6 +47,9 @@ pub fn run() {
             features::ui::get_player_status,
             features::ui::play_song,
             features::ui::stop_playback,
+            // Online Search
+            features::ui::search_online,
+            features::ui::resolve_song,
             // Search
             features::ui::fuzzy_search_songs,
             features::ui::autocomplete,
