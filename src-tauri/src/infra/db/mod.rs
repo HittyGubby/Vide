@@ -469,6 +469,68 @@ impl Database {
             None => Ok(None),
         }
     }
+
+    // ── Cache bulk helpers ────────────────────────────────────────
+
+    /// Delete all cache entries for a song (regardless of path).
+    pub async fn delete_cache_entry(&self, song_id: &SongId) -> Result<(), DbErr> {
+        use entity::cache_entry;
+        cache_entry::Entity::delete_many()
+            .filter(cache_entry::Column::SongId.eq(&song_id.0))
+            .exec(&self.conn)
+            .await?;
+        Ok(())
+    }
+
+    /// List all cache entries (all sources, all songs).
+    pub async fn list_cache_entries(&self) -> Result<Vec<DomainCacheEntry>, DbErr> {
+        use entity::cache_entry;
+        let entries = cache_entry::Entity::find()
+            .all(&self.conn)
+            .await?
+            .into_iter()
+            .map(|e| DomainCacheEntry {
+                song_id: SongId(e.song_id),
+                path: std::path::PathBuf::from(e.path),
+                size: e.size as u64,
+                source: e.source,
+                last_used: e.last_used as u64,
+                valid: e.valid != 0,
+            })
+            .collect();
+        Ok(entries)
+    }
+
+    /// List valid cache entries sorted by last_used ascending (LRU first).
+    pub async fn list_cache_entries_lru(&self) -> Result<Vec<DomainCacheEntry>, DbErr> {
+        use entity::cache_entry;
+        let entries = cache_entry::Entity::find()
+            .filter(cache_entry::Column::Valid.eq(1))
+            .order_by(cache_entry::Column::LastUsed, Order::Asc)
+            .all(&self.conn)
+            .await?
+            .into_iter()
+            .map(|e| DomainCacheEntry {
+                song_id: SongId(e.song_id),
+                path: std::path::PathBuf::from(e.path),
+                size: e.size as u64,
+                source: e.source,
+                last_used: e.last_used as u64,
+                valid: e.valid != 0,
+            })
+            .collect();
+        Ok(entries)
+    }
+
+    /// Delete all invalid cache entries from the database.
+    pub async fn delete_invalid_cache_entries(&self) -> Result<(), DbErr> {
+        use entity::cache_entry;
+        cache_entry::Entity::delete_many()
+            .filter(cache_entry::Column::Valid.eq(0))
+            .exec(&self.conn)
+            .await?;
+        Ok(())
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
