@@ -290,6 +290,75 @@ impl Database {
         Ok(songs)
     }
 
+    /// List songs in "My Library" — those with at least one local path
+    /// OR at least one user tag. External search results without paths
+    /// or tags are excluded.
+    pub async fn list_library_songs(&self) -> Result<Vec<DomainSong>, DbErr> {
+        use entity::{song, song_path, tag};
+        use sea_orm::FromQueryResult;
+
+        #[derive(FromQueryResult)]
+        struct IdRow {
+            song_id: String,
+        }
+
+        let path_ids: Vec<String> = song_path::Entity::find()
+            .select_only()
+            .column(song_path::Column::SongId)
+            .distinct()
+            .into_model::<IdRow>()
+            .all(&self.conn)
+            .await?
+            .into_iter()
+            .map(|r| r.song_id)
+            .collect();
+
+        let tag_ids: Vec<String> = tag::Entity::find()
+            .select_only()
+            .column(tag::Column::SongId)
+            .distinct()
+            .into_model::<IdRow>()
+            .all(&self.conn)
+            .await?
+            .into_iter()
+            .map(|r| r.song_id)
+            .collect();
+
+        let mut all_ids: Vec<String> = Vec::with_capacity(path_ids.len() + tag_ids.len());
+        all_ids.extend(path_ids);
+        all_ids.extend(tag_ids);
+        all_ids.sort();
+        all_ids.dedup();
+
+        if all_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let db_songs = song::Entity::find()
+            .filter(song::Column::SongId.is_in(all_ids))
+            .order_by(song::Column::AddedTime, Order::Desc)
+            .all(&self.conn)
+            .await?;
+
+        Ok(db_songs
+            .into_iter()
+            .map(|s| {
+                let metadata =
+                    serde_json::from_str(&s.metadata_json).unwrap_or_default();
+                DomainSong {
+                    id: SongId(s.song_id),
+                    title: s.title,
+                    artist: s.artist,
+                    album: s.album,
+                    tags: Vec::new(),
+                    sources: Vec::new(),
+                    paths: Vec::new(),
+                    metadata,
+                }
+            })
+            .collect())
+    }
+
     // ── Playlists ─────────────────────────────────────────────────
 
     /// Save a playlist (insert or replace).
@@ -378,6 +447,38 @@ impl Database {
             entries,
             source,
         }))
+    }
+
+    // ── Playlist listing ───────────────────────────────────────────
+
+    /// List all playlists (without their entries — use get_playlist for details).
+    pub async fn list_playlists(&self) -> Result<Vec<DomainPlaylist>, DbErr> {
+        use entity::playlist;
+
+        let db_pls = playlist::Entity::find()
+            .all(&self.conn)
+            .await?;
+
+        Ok(db_pls
+            .into_iter()
+            .map(|db_pl| {
+                let source = match db_pl.source_type.as_str() {
+                    "M3U" => PlaylistSource::M3U {
+                        file_path: db_pl
+                            .source_path
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_default(),
+                    },
+                    _ => PlaylistSource::UserCreated,
+                };
+                DomainPlaylist {
+                    id: PlaylistId(db_pl.playlist_id),
+                    name: db_pl.name,
+                    entries: Vec::new(),
+                    source,
+                }
+            })
+            .collect())
     }
 
     // ── Cache ─────────────────────────────────────────────────────

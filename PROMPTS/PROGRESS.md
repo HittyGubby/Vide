@@ -1,6 +1,6 @@
 # Vide 项目进度总览
 
-> 本文档是项目的完整上下文快照。适用于新对话加载后快速了解项目全貌。
+> 最后更新: 2026-06-30
 > 对照阅读：`SPEC_CN.md`（设计规范）、`ROADMAP.md`（路线图）
 
 ---
@@ -9,282 +9,162 @@
 
 - **名称**: Vide
 - **类型**: 跨平台音乐平台（桌面优先）
-- **技术栈**: Rust (核心) + Tauri 2 (桌面壳) + Svelte (前端)
+- **技术栈**: Rust (核心) + Tauri 2 (桌面壳) + Svelte 5 (前端)
 - **元数据库**: SQLite (WAL mode) via SeaORM
 - **插件通信**: JSON lines over stdin/stdout
 - **插件语言**: 任意 (通过子进程)
 
 ---
 
-## 2. 目录结构与模块依赖
+## 2. 已完成功能
 
-```
-src-tauri/src/
-├── main.rs              # Tauri 入口（不变）
-├── lib.rs               # crate root → 模块声明 + Tauri run()
-│
-├── models/              # Phase 1: 纯数据定义层 (serde only)
-│   ├── song.rs          #   Song, SongId, Source, SongMetadata
-│   ├── tag.rs           #   Tag (namespace:value), MetaTag
-│   ├── playlist.rs      #   Playlist, PlaylistId, PlaylistEntry, PlaylistSource
-│   └── cache.rs         #   CacheEntry
-│
-├── infra/               # Phase 2: 基础设施层
-│   ├── hash.rs          #   blake3 确定性ID生成
-│   ├── fs.rs            #   目录遍历 + 缓存目录 + 文件chunk读取
-│   ├── logging.rs       #   tracing-subscriber 初始化
-│   ├── ipc.rs           #   JSON lines 协议 (PluginRequest/Response)
-│   ├── db.rs            #   SeaORM 连接管理 + 8表 CRUD + Schema迁移
-│   ├── config.rs        #   AppConfig 读写 settings 表
-│   └── process.rs       #   子进程管理器 (Semaphore + TaskTable)
-│
-├── features/            # Phase 3: 功能特性
-│   ├── metadata.rs      #   lofty 解析本地文件 ID3/Vorbis/MP4 元数据
-│   ├── tags.rs          #   标签CRUD + 命名空间聚合 + 元标签树
-│   ├── search/
-│   │   ├── grammar.pest #   PEG 查询语法
-│   │   ├── parser.rs    #   QueryAst + pest 解析 + 内存求值器
-│   │   └── fuzzy.rs     #   模糊搜索 + 评分 (exact > prefix > substring > Jaccard)
-│   ├── playlist.rs      #   M3U 解析 + HLS 嗅探 + 导入/导出
-│   ├── cache.rs         #   媒体缓存管理 (temp→rename, LRU淘汰)
-│   ├── library.rs       #   库扫描 + 去重 + 播放回退
-│   ├── plugin/          #   插件系统：类型/清单/路由/运行时
-│   │   ├── types.rs     #   CapabilityType, PluginManifest, StreamDescriptor
-│   │   ├── manifest.rs  #   扫描 plugin_dir/manifest.json
-│   │   ├── router.rs    #   RoutingTable (platform,capability)→Provider
-│   │   └── runtime.rs   #   tokio 子进程 + semaphore + 超时控制
-│   ├── player.rs        #   mpv 子进程封装 (URL/direct + pipe)
-│   ├── network/
-│   │   ├── mod.rs       #   NetworkManager 启动/停止
-│   │   ├── api.rs       #   axum 路由 (9 endpoints)
-│   │   └── sse.rs       #   broadcast 频道 + SSE流
-│   └── ui.rs            #   20个 Tauri command handlers
-│
-└── app.rs               # AppState 聚合 + 初始化编排
-```
+### 后端 (Rust)
 
-**模块依赖图（简化）**:
-```
-app.rs (AppState)
-  ├── infra::db
-  ├── infra::config
-  ├── features::player
-  ├── features::network
-  └── features::plugin
-
-features/* → infra/* → models/*
-```
-
----
-
-## 3. 关键设计决策
-
-| 决策 | 方案 | 理由 |
+| 功能 | 状态 | 说明 |
 |------|------|------|
-| ORM | SeaORM 1.x | 异步、Entity 链式查询、无宏依赖的表定义、Send+Sync 连接 |
-| 搜索语法 | pest PEG + 内存求值 | 编译期语法校验、桌面场景 <10万首歌内存过滤可接受 |
-| 插件通信 | JSON lines stdin/stdout | 语言无关、简单可靠 |
-| 播放后端 | mpv 子进程 | 成熟、不捆绑解码库 |
-| HTTP | axum 0.7 | 最流行的异步 web 框架 |
-| 状态共享 | Arc\<tokio::sync::Mutex\<T\>\> | Tauri State 要求 Send+Sync |
+| **数据模型** | ✅ | Song, Tag, Playlist, CacheEntry 等 |
+| **数据库 (SeaORM)** | ✅ | 8表 CRUD，WAL 模式 |
+| **文件哈希** | ✅ | blake3 确定性 ID 生成 |
+| **文件系统** | ✅ | 目录扫描、缓存目录、文件 chunk 读取 |
+| **配置系统** | ✅ | AppConfig 读写 settings 表 |
+| **IPC 协议** | ✅ | JSON lines PluginRequest/Response |
+| **进程管理** | ✅ | Semaphore + TaskTable |
+| **元数据解析** | ✅ | lofty 解析 ID3/Vorbis/MP4 |
+| **标签系统** | ✅ | 标签 CRUD + 命名空间聚合 |
+| **搜索** | ✅ | pest PEG 解析器 + 模糊搜索 + 自动补全 |
+| **M3U 解析** | ✅ | 导入 + HLS 嗅探 |
+| **缓存管理** | ✅ | temp→rename，LRU 淘汰 |
+| **库扫描** | ✅ | 去重 + 播放回退 |
+| **播放器 (mpv)** | ✅ | URL 播放 + Pipe 模式 + Seek |
+| **网络服务** | ✅ | axum 9 端点 API + SSE |
+| **插件系统** | ✅ | 编排层：search / resolve / stream + 回退机制 |
+| **系统托盘** | ✅ | 显示/隐藏 + 菜单 + 左键切换 |
+| **`search_online` 命令** | ✅ | 通过插件搜索网络内容 |
+| **`resolve_song` 命令** | ✅ | 解析在线歌曲元数据，存入 DB |
+| **`get_lyrics` 命令** | ✅ | 获取歌词 |
+| **`list_library_songs` 命令** | ✅ | 过滤出"我的库"（有路径或有标签） |
+| **`list_playlists` 命令** | ✅ | 列出所有播放列表 |
+| **进度条 Seek** | ✅ | mpv stdin 发送 `set time-pos` |
+
+### 前端 (Svelte)
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| **无边框窗口** | ✅ | 自定义标题栏 + Windows 风格控制按钮 |
+| **窗口大小持久化** | ✅ | localStorage 保存/恢复尺寸和最大化状态 |
+| **侧栏导航** | ✅ | 搜索/列表/设置 三个按钮 |
+| **歌曲列表** | ✅ | 可配置排序、列头拖拽、列显隐 |
+| **本地搜索** | ✅ | 客户端即时过滤 title/artist/album/paths |
+| **搜索历史** | ✅ | localStorage 持久化，最近 20 条 |
+| **插件搜索下拉 (标题栏)** | ✅ | Tab 切换平台，点击即播放 |
+| **播放栏** | ✅ | 显示当前歌曲、时间、播放/暂停 |
+| **进度条** | ✅ | 可点击 seek |
+| **全屏播放详情** | ✅ | 封面 + 歌词 + 进阶设置 + 控制 |
+| **歌词显示** | ✅ | 从后端获取并显示 |
+| **标签编辑悬浮窗** | ✅ | 按命名空间分组 + 增删 + 自动补全 |
+| **右键菜单** | ✅ | 歌曲行右键：播放/编辑标签/下载(占位) |
+| **导入 Modal** | ✅ | 本地 M3U 导入 + 在线链接（占位） |
+| **播放列表页** | ✅ | 显示已有列表 |
+| **设置页** | 🔶 半完成 | 库管理、数据导出、关于（库目录增删/扫描缺 onclick） |
+| **JSON 导出** | ✅ | 全部歌曲导出为 JSON |
+
+### 插件系统
+
+| 组件 | 状态 | 路径 |
+|------|------|------|
+| PluginManager 编排 | ✅ | `features/plugin/mod.rs` |
+| 路由表 (Mutex) | ✅ | `features/plugin/router.rs` |
+| 运行时 + 超时 | ✅ | `features/plugin/runtime.rs` |
+| 类型定义 | ✅ | `features/plugin/types.rs` |
+| **yt-dlp 适配器** | ✅ 已创建 | `plugins/ytdlp-adapter/`（需安装 yt-dlp） |
 
 ---
 
-## 4. 数据库 Schema（8张表）
-
-通过 SeaORM entity 定义 + `Schema::create_table_from_entity().if_not_exists()` 自动建表。
-
-| 表 | 主键 | 说明 |
-|----|------|------|
-| `songs` | `song_id TEXT` | 歌曲核心字段 + metadata_json (JSON blob) |
-| `song_paths` | `(song_id, path)` | 多路径存储 |
-| `song_sources` | `(song_id, platform)` | 来源标识 |
-| `tags` | `(song_id, namespace, value)` | namespace:value 标签 |
-| `playlists` | `playlist_id TEXT` | M3U / UserCreated |
-| `playlist_entries` | `(playlist_id, song_id)` | 有序引用 |
-| `cache_entries` | `(song_id, path)` | 缓存文件追踪 |
-| `settings` | `key TEXT` | JSON 值配置 |
-
-Entities 定义: `src-tauri/src/infra/db/entity/*.rs`
-Database 方法: `src-tauri/src/infra/db/mod.rs` — `Database` struct
-
----
-
-## 5. Tauri 命令清单（20个）
+## 3. Tauri 命令清单（共 24 个）
 
 ```rust
-// Library
-list_songs()                 → Vec<Song>
-get_song(id)                 → Option<Song>
-search_songs(query)          → Vec<Song>          // PEG 结构化查询
-scan_library()               → ScanResult
+// Library (4)
+list_songs()              → Vec<Song>            // 全量
+list_library_songs()      → Vec<Song>            // 我的库（有路径/标签）
+get_song(id)              → Option<Song>
+search_songs(query)       → Vec<Song>
+scan_library()            → ScanResult
 
-// Playback
-get_player_status()          → PlaybackStatus
-play_song(id)                → PlaybackStatus
-stop_playback()              → PlaybackStatus
+// Playback (4)
+get_player_status()       → PlaybackStatus
+get_lyrics(song_id)       → Option<String>
+play_song(id)             → PlaybackStatus
+stop_playback()           → PlaybackStatus
+seek(position_secs)       → PlaybackStatus
 
-// Search
-fuzzy_search_songs(query)    → Vec<FuzzyMatch>    // 容错搜索
-autocomplete(prefix)         → Vec<String>         // 搜索栏补全
+// Online Search (2)
+search_online(query, platform?) → Vec<SearchResultItem>
+resolve_song(platform, id)      → Song
 
-// Tags
-get_meta_tags()              → Vec<MetaTag>        // 标签树
-add_tag(song_id, ns, val)    → ()
+// Search (2)
+fuzzy_search_songs(query) → Vec<FuzzyMatch>
+autocomplete(prefix)      → Vec<String>
+
+// Tags (4)
+get_meta_tags()           → Vec<MetaTag>
+add_tag(song_id, ns, val) → ()
 remove_tag(song_id, ns, val) → ()
-get_song_tags(song_id)       → Vec<Tag>
-get_namespaces()             → Vec<String>
+get_song_tags(song_id)    → Vec<Tag>
+get_namespaces()          → Vec<String>
 
-// Playlists
-import_m3u(path)             → Playlist
-get_playlist(id)             → Option<Playlist>
-export_playlist(id, out)     → ()
+// Playlists (3)
+import_m3u(path)          → Playlist
+get_playlist(id)          → Option<Playlist>
+list_playlists()          → Vec<Playlist>
 
-// Server
-start_server(addr)           → ()
-stop_server()                → ()
-get_server_status()          → bool
+// Server (3)
+start_server(addr)        → ()
+stop_server()             → ()
+get_server_status()       → bool
 ```
-
-定义位置: `src-tauri/src/features/ui.rs`
-注册位置: `src-tauri/src/lib.rs` — `tauri::generate_handler![]`
 
 ---
 
-## 6. 初始化顺序 (`app.rs :: AppState::initialize()`)
+## 4. 当前已知 Bug
 
-1. Open database (create tables via schema migrations)
-2. Load AppConfig from settings table
-3. Init PluginManager if plugin_dir exists
-4. Create PlayerManager (idle)
-5. Create NetworkManager (not started)
-6. Wrap everything in Arc/Mutex → AppState
-7. Register commands → Tauri::Builder::run()
-
----
-
-## 7. 插件系统
-
-**架构**: 外部进程 ↔ stdin/stdout JSON lines ↔ Rust Core
-
-**清单文件** (`plugin/<name>/manifest.json`):
-```json
-{
-  "name": "yt-dlp",
-  "version": "1.0",
-  "exec": ["python3", "adapter.py"],
-  "capabilities": [
-    { "type": "search", "platform": "youtube" },
-    { "type": "stream", "platform": "youtube" }
-  ]
-}
-```
-
-**IPC 协议**:
-```
-Core → Plugin: {"id":"t001","action":"search","params":{...}}
-Plugin → Core: {"id":"t001","result":[...]}
-Plugin → Core: {"id":"t001","error":"not_supported"}
-```
-
-**能力类型**: `search`, `metadata`, `playback`, `lyrics`, `recommendation`
-
-**路由**: 每个 `(platform, capability)` 排他，回退顺序可配置。
-
-**超时**: search 10s, stream 30s, resolve 5s。超时后 SIGKILL。
-
-**相关代码**:
-- 核心协议: `src-tauri/src/infra/ipc.rs`
-- 插件类型: `src-tauri/src/features/plugin/types.rs`
-- 清单加载: `src-tauri/src/features/plugin/manifest.rs`
-- 路由表: `src-tauri/src/features/plugin/router.rs`
-- 运行时代码: `src-tauri/src/features/plugin/runtime.rs`
-- 编排: `src-tauri/src/features/plugin/mod.rs`
+| # | Bug | 严重程度 | 文件 | 说明 |
+|---|-----|----------|------|------|
+| 1 | **设置页"添加"按钮无 onclick** | 🔴 | `settings/+page.svelte:45` | 点击无反应 |
+| 2 | **设置页"立即扫描"按钮无 onclick** | 🔴 | `settings/+page.svelte:51` | 需调用 `invoke("scan_library")` |
+| 3 | **export_playlist 仍是 M3U 格式** | 🟡 | `ui.rs:194` | 用户要求废弃 M3U 导出 |
+| 4 | **搜索历史有时不显示** | 🟡 | `+page.svelte` | `handleSearchBlur` 延迟 200ms 可能不够 |
+| 5 | **新用户空状态引导不足** | 🟡 | `+page.svelte` | 空状态提示应引导到设置页配置库目录 |
+| 6 | **插件搜索无插件时报错信息不友好** | 🟡 | `TitleBar.svelte` | "plugin system not available" 对用户无意义 |
+| 7 | **离线使用 `search_online` 报错未处理** | 🟡 | `TitleBar.svelte` | 网络错误应提示而非 crash |
 
 ---
 
-## 8. 编译 & 运行
+## 5. 待完成任务
+
+| 优先级 | 任务 | 类型 | 估算 |
+|--------|------|------|------|
+| **P0** | Bug 修复（见上表） | 混合 | 小 |
+| **P1** | 全局快捷键 | 后端+前端 | 中 |
+| **P2** | 设置页完善（库目录管理、插件配置） | 前端+后端 | 中 |
+| **P3** | 播放详情进阶设置（速度、均衡器） | 前端+后端 | 大 |
+| **P4** | 在线导入（bilibili/YouTube 播放列表） | 后端+插件 | 中 |
+| **P5** | 分布式节点 (§14) | 后端 | 大 |
+| **P6** | UI 打磨（动画、响应式、加载骨架） | 前端 | 中 |
+
+---
+
+## 6. 编译状态
 
 ```bash
-cd src-tauri
-
-# 检查
-cargo check
-
-# 测试 (16 tests, 0 failed)
-cargo test
-
-# 运行 (需要 Tauri 环境 + mpv)
-cargo tauri dev
-
-# 构建
-cargo build
+cargo check     # 通过，10 warnings（全部有意预留）
+bun run build   # 通过，0 errors，0 warnings
+cargo test      # 16/16 通过
 ```
 
----
-
-## 9. 当前 Warning 状态（20个，全部有意预留）
-
-### A. 未来可串联的公共 API（8个）
-| Warning | 原因 | 计划 |
-|---------|------|------|
-| `CacheManager` 全部方法 | 缓存模块已实现，播放器未接入 | 播放器实现后串联 |
-| `update_from_file` | 内联提取而非使用此函数 | 重构为统一调用 |
-| `find_first_available_path` | 播放回退工具 | 播放器集成 |
-| `is_file_changed` | 增量扫描 | 库扫描优化时用 |
-| `check_alive` | 定时轮询检查 | 前端定时调用 |
-
-### B. 插件系统内部（10个）
-| Warning | 原因 |
-|---------|------|
-| `PluginRuntime.ensure_running`, `send_request` 等 | 前端未暴露插件控制命令 |
-| `TIMEOUT_*` 常量 | runtime 调用时使用 |
-| `CapabilityType`, `SearchResultItem`, `PluginStatus` | 类型定义，用于插件结果 |
-
-### C. AppState / PluginManager 预留字段（2个）
-| Warning | 处理 |
-|---------|------|
-| `AppState.plugins` | 已加 `#[allow(dead_code)]` |
-| `PluginManager.runtime` | 运行时内部字段 |
-
----
-
-## 10. 已完成 vs 未完成
-
-### 已完成 ✅
-
-- Phase 1: 所有核心类型 (Song, Tag, Playlist, CacheEntry)
-- Phase 2: 所有基础设施 (Hash, FS, Logging, IPC, DB/SeaORM, Config, Process)
-- Phase 3: 全部 features 模块 (metadata, tags, search, playlist, cache, library, plugin, player, network, ui)
-- SPEC §1-§13, §15-§16 覆盖
-- 20个 Tauri 命令注册
-- 16 个测试通过 (`cargo test`)
-
-### 未完成/推迟 ❌
-
-- **§14 分布式节点**: 跨设备同步 + 远程分享
-- **§12 yt-dlp 适配器**: 非 Rust 插件，需单独开发
-- **前端 UI (Svelte)**: 项目中的 `src/routes/` 和 `src/app.html` 还是 Tauri 模板
-- **插件文档**: 开发者文档，包括 manifest.json 规格和 IPC 协议说明
-
----
-
-## 11. 推荐后续路线（Phase 4）
-
-| 优先级 | 工作 | 估算 | 依赖 |
-|--------|------|------|------|
-| **P0** | 前端 UI (Svelte) | 大 | 全部 Rust 后端 |
-| **P1** | 插件文档 + yt-dlp 适配器 | 中 | 插件系统已就绪 |
-| **P2** | 分布式节点 | 大 | 基础架构已就绪 |
-| **P3** | 移动端支持 | 待定 | Tauri Mobile 成熟 |
-| **P4** | 插件市场 | 远期 | 先有插件生态 |
-
----
-
-## 12. 关键依赖版本
+## 7. 关键依赖
 
 ```toml
-tauri = "2"
+tauri = "2" (features = ["tray-icon"])
 sea-orm = "1" (sqlx-sqlite + macros + runtime-tokio)
 tokio = "1" (process + sync + time + rt + macros)
 axum = "0.7"
@@ -294,12 +174,5 @@ lofty = "0.21"
 blake3 = "1"
 walkdir = "2"
 dirs = "5"
-mime_guess = "2"
-tokio-util = "0.7"
-tokio-stream = "0.1"
+lucide-svelte = "1" (前端图标)
 ```
-
----
-
-*文档生成日期: 2026-06-20*
-*最后验证: `cargo check` 通过, `cargo test` 16/16 通过, 20 warnings (全部有意)*

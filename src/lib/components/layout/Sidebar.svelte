@@ -2,17 +2,22 @@
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { Search, ListMusic, Settings } from 'lucide-svelte';
+  import { ui } from '$lib/stores/ui.svelte';
 
   const navItems = [
-    { id: 'search', icon: Search, label: '搜索', route: '/' },
-    { id: 'playlists', icon: ListMusic, label: '列表', route: '/playlists' },
+    { id: 'search', icon: Search, label: '搜索', route: null },
+    { id: 'library', icon: ListMusic, label: '列表', route: '/' },
     { id: 'settings', icon: Settings, label: '设置', route: '/settings' },
   ];
 
   let currentPath = $derived($page.url.pathname);
 
-  function navigate(route: string) {
-    goto(route);
+  function navigate(item: typeof navItems[0]) {
+    if (item.route) {
+      goto(item.route);
+    } else {
+      ui.focusTitleBarSearch++;
+    }
   }
 </script>
 
@@ -21,8 +26,8 @@
     {#each navItems as item}
       <button
         class="nav-btn"
-        class:active={currentPath === item.route}
-        onclick={() => navigate(item.route)}
+        class:active={item.route ? currentPath === item.route : false}
+        onclick={() => navigate(item)}
         title={item.label}
       >
         <item.icon size={18} />
@@ -40,6 +45,7 @@
     background: var(--bg-surface);
     border-right: 1px solid var(--border-subtle);
     overflow: hidden;
+    user-select: none;
   }
 
   .nav-items {

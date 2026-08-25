@@ -19,6 +19,41 @@ pub async fn list_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, 
 }
 
 #[tauri::command]
+pub async fn list_library_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, String> {
+    state
+        .db
+        .list_library_songs()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_library_roots(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let config = state.config.lock().await;
+    Ok(config
+        .library_roots
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
+}
+
+#[tauri::command]
+pub async fn add_library_root(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let mut config = state.config.lock().await;
+    let p = std::path::PathBuf::from(&path);
+    if !config.library_roots.contains(&p) {
+        config.library_roots.push(p);
+        config.save(&*state.db).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_song(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -64,6 +99,35 @@ pub async fn get_player_status(state: tauri::State<'_, AppState>) -> Result<Play
 }
 
 #[tauri::command]
+pub async fn get_lyrics(
+    state: tauri::State<'_, AppState>,
+    song_id: String,
+) -> Result<Option<String>, String> {
+    let song = state
+        .db
+        .get_song(&SongId(song_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "song not found".to_string())?;
+
+    // Check stored lyrics first
+    if let Some(lyrics) = &song.metadata.lyrics {
+        if !lyrics.is_empty() {
+            return Ok(Some(lyrics.clone()));
+        }
+    }
+
+    // Plugin lyrics capability (future use)
+    // if let Some(plugins) = state.plugins.as_ref() {
+    //     if let Some(source) = song.sources.first() {
+    //         ...
+    //     }
+    // }
+
+    Ok(None)
+}
+
+#[tauri::command]
 pub async fn play_song(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -101,6 +165,16 @@ pub async fn play_song(
 pub async fn stop_playback(state: tauri::State<'_, AppState>) -> Result<PlaybackStatus, String> {
     let mut player = state.player.lock().await;
     Ok(player.stop().await)
+}
+
+#[tauri::command]
+pub async fn seek(
+    state: tauri::State<'_, AppState>,
+    position_secs: f64,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.seek(position_secs).await?;
+    Ok(player.status())
 }
 
 // ── Online Plugin Search ──────────────────────────────────────────
@@ -285,6 +359,17 @@ pub async fn get_playlist(
     state
         .db
         .get_playlist(&crate::models::playlist::PlaylistId(id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_playlists(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::models::playlist::Playlist>, String> {
+    state
+        .db
+        .list_playlists()
         .await
         .map_err(|e| e.to_string())
 }

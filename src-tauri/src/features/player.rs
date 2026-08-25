@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 use crate::features::plugin::types::StreamDescriptor;
@@ -24,15 +25,14 @@ pub struct PlaybackStatus {
     pub duration_secs: Option<f64>,
 }
 
-/// Simple playback engine wrapping an mpv subprocess.
+/// Playback engine wrapping an mpv subprocess.
 ///
-/// For Phase 3, this is a minimal implementation:
-/// - Spawns mpv for `url_stream` or connects a `pipe` command to mpv's stdin
-/// - State tracking (playing/stopped)
-/// - Tracks elapsed time via `Instant`
-/// - Pause/resume via Unix signal (SIGSTOP/SIGCONT) where available
+/// Spawns mpv for `url_stream` or pipes a command to mpv's stdin.
+/// When playing via URL, mpv's stdin is kept open for seek commands
+/// using `--input-file=/dev/stdin`.
 pub struct PlayerManager {
     child: Option<tokio::process::Child>,
+    stdin: Option<tokio::process::ChildStdin>,
     state: PlaybackState,
     media_id: Option<String>,
     started_at: Option<Instant>,
@@ -44,6 +44,7 @@ impl PlayerManager {
     pub fn new() -> Self {
         PlayerManager {
             child: None,
+            stdin: None,
             state: PlaybackState::Stopped,
             media_id: None,
             started_at: None,
@@ -52,9 +53,6 @@ impl PlayerManager {
     }
 
     /// Start playing a stream from a descriptor.
-    ///
-    /// For `url_stream`: spawns mpv directly with the URL and optional headers.
-    /// For `pipe`: spawns the pipe command connected to mpv's stdin (`<cmd> | mpv -`).
     pub async fn play(&mut self, descriptor: &StreamDescriptor) -> Result<PlaybackStatus, String> {
         self.stop().await;
 
@@ -76,6 +74,7 @@ impl PlayerManager {
         }
     }
 
+    /// Play a URL via mpv, keeping stdin open for seek commands.
     async fn play_url(
         &mut self,
         id: &str,
@@ -87,10 +86,11 @@ impl PlayerManager {
         cmd.arg("--audio-display=no");
         cmd.arg("--cache=yes");
         cmd.arg("--msg-level=all=error");
+        cmd.arg("--input-file=/dev/stdin");
+        cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
 
-        // Custom headers
         if let Some(hdrs) = headers {
             for (key, value) in hdrs {
                 cmd.arg("--http-header-fields");
@@ -100,9 +100,11 @@ impl PlayerManager {
 
         cmd.arg(url);
 
-        let child = cmd.spawn().map_err(|e| format!("failed to spawn mpv: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| format!("failed to spawn mpv: {e}"))?;
+        let stdin = child.stdin.take().ok_or_else(|| "stdin not available".to_string())?;
 
         self.child = Some(child);
+        self.stdin = Some(stdin);
         self.state = PlaybackState::Playing;
         self.media_id = Some(id.to_string());
         self.started_at = Some(Instant::now());
@@ -112,12 +114,12 @@ impl PlayerManager {
         Ok(self.status())
     }
 
+    /// Play via a pipe command (no seek support in this mode).
     async fn play_pipe(&mut self, id: &str, cmd_parts: &[String]) -> Result<PlaybackStatus, String> {
         if cmd_parts.is_empty() {
             return Err("empty pipe command".to_string());
         }
 
-        // Use shell to connect pipe command output to mpv's stdin
         let cmd_str = cmd_parts.join(" ");
         let shell_cmd = format!("{} | mpv --no-video --audio-display=no --msg-level=all=error -", cmd_str);
 
@@ -130,6 +132,7 @@ impl PlayerManager {
             .map_err(|e| format!("failed to spawn pipe+mpv: {e}"))?;
 
         self.child = Some(child);
+        self.stdin = None; // no stdin handle in pipe mode
         self.state = PlaybackState::Playing;
         self.media_id = Some(id.to_string());
         self.started_at = Some(Instant::now());
@@ -139,8 +142,29 @@ impl PlayerManager {
         Ok(self.status())
     }
 
+    /// Seek to an absolute position (URL mode only).
+    pub async fn seek(&mut self, position_secs: f64) -> Result<(), String> {
+        if position_secs < 0.0 {
+            return Err("negative position".to_string());
+        }
+        let mut stdin = self
+            .stdin
+            .take()
+            .ok_or_else(|| "seek not available (pipe mode or no active playback)".to_string())?;
+
+        let cmd = format!("set time-pos {}\n", position_secs);
+        let result = stdin.write_all(cmd.as_bytes()).await;
+
+        // Put stdin back regardless of result
+        self.stdin = Some(stdin);
+
+        result.map_err(|e| format!("seek error: {e}"))
+    }
+
     /// Stop playback and kill the mpv process.
     pub async fn stop(&mut self) -> PlaybackStatus {
+        // Drop stdin first so mpv gets EOF / stops blocking on input
+        self.stdin.take();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -155,9 +179,7 @@ impl PlayerManager {
 
     /// Get the current playback status.
     pub fn status(&self) -> PlaybackStatus {
-        let elapsed = self
-            .started_at
-            .map(|t| t.elapsed().as_secs_f64());
+        let elapsed = self.started_at.map(|t| t.elapsed().as_secs_f64());
 
         PlaybackStatus {
             state: self.state,
@@ -168,7 +190,6 @@ impl PlayerManager {
     }
 
     /// Check if the mpv process is still running.
-    /// If it exited, update state to Stopped.
     pub async fn check_alive(&mut self) {
         if self.state != PlaybackState::Playing {
             return;
@@ -181,7 +202,7 @@ impl PlayerManager {
                     self.media_id = None;
                     self.started_at = None;
                 }
-                Ok(None) => {} // still running
+                Ok(None) => {}
                 Err(e) => {
                     warn!("error checking mpv status: {e}");
                 }

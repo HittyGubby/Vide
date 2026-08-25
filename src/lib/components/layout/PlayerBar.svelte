@@ -28,8 +28,24 @@
       } catch (e) {
         console.error("stop error:", e);
       }
+    } else if (player.mediaId) {
+      try {
+        await invoke("play_song", { id: player.mediaId });
+        player.isPlaying = true;
+      } catch (e) {
+        console.error("play error:", e);
+      }
     }
   }
+
+  function formatDuration(seconds?: number): string {
+    if (!seconds || seconds <= 0) return "--:--";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  let durationFormatted = $derived(formatDuration(player.duration));
 
   function formatTime(secs: number): string {
     if (secs <= 0) return "0:00";
@@ -71,9 +87,11 @@
     </div>
   </div>
 
-  <!-- Center: selected state -->
+  <!-- Center: time info -->
   <div class="player-center">
     <span class="time-badge">{currentTime}</span>
+    <span class="time-sep">/</span>
+    <span class="time-total">{durationFormatted}</span>
   </div>
 
   <!-- Right: playback controls + extras -->
@@ -149,6 +167,7 @@
     border-top: none;
     padding: 0 8px 0 12px;
     gap: 8px;
+    user-select: none;
   }
 
   /* ── Left Section ────────────────────────────────── */

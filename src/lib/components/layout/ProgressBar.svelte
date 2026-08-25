@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { player } from "$lib/stores/player.svelte";
 
   let elapsedFormatted = $derived(formatTime(player.elapsed));
   let durationFormatted = $derived(formatTime(player.duration));
   let progressPct = $derived(
-    player.duration > 0 ? Math.min((player.elapsed / player.duration) * 100, 100) : 0,
+    player.duration > 0
+      ? Math.min((player.elapsed / player.duration) * 100, 100)
+      : 0,
   );
 
   function formatTime(secs: number): string {
@@ -13,10 +16,24 @@
     const s = Math.floor(secs % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
   }
+
+  async function seekTrack(e: MouseEvent) {
+    if (!player.isPlaying || player.duration <= 0) return;
+    const target = e.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    const targetSecs = pct * player.duration;
+    try {
+      await invoke("seek", { positionSecs: targetSecs });
+      player.elapsed = targetSecs;
+    } catch {
+      /* seek not supported in this mode */
+    }
+  }
 </script>
 
 <div class="progress-bar" class:visible={player.isPlaying}>
-  <div class="progress-track">
+  <div class="progress-track" onclick={seekTrack}>
     <div class="progress-fill" style="width: {progressPct}%"></div>
   </div>
   <span class="time-display">
@@ -35,6 +52,7 @@
     border-top: 1px solid var(--border-subtle);
     opacity: 0.4;
     transition: opacity 0.2s;
+    user-select: none;
   }
 
   .progress-bar.visible {
@@ -48,10 +66,17 @@
     border-radius: 2px;
     overflow: hidden;
     cursor: pointer;
+    position: relative;
   }
 
   .progress-track:hover {
     height: 6px;
+  }
+
+  .progress-track::before {
+    content: "";
+    position: absolute;
+    inset: -6px 0;
   }
 
   .progress-fill {
@@ -59,6 +84,7 @@
     background: var(--accent-primary);
     border-radius: 2px;
     transition: width 0.5s linear;
+    pointer-events: none;
   }
 
   .time-display {

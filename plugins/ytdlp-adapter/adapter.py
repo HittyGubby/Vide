@@ -31,13 +31,15 @@ def handle_search(params):
                 continue
             try:
                 data = json.loads(line)
-                items.append({
-                    "platform": platform,
-                    "id": data.get("id", ""),
-                    "title": data.get("title", "Unknown"),
-                    "artist": data.get("channel", data.get("uploader", "")),
-                    "duration": data.get("duration"),
-                })
+                items.append(
+                    {
+                        "platform": platform,
+                        "id": data.get("id", ""),
+                        "title": data.get("title", "Unknown"),
+                        "artist": data.get("channel", data.get("uploader", "")),
+                        "duration": data.get("duration"),
+                    }
+                )
             except json.JSONDecodeError:
                 continue
         return items
@@ -52,8 +54,11 @@ def handle_resolve(params):
     platform = params.get("platform", "youtube")
     item_id = params.get("id", "")
 
-    url = f"https://www.youtube.com/watch?v={item_id}" if platform == "youtube" \
-          else f"https://www.bilibili.com/video/{item_id}"
+    url = (
+        f"https://www.youtube.com/watch?v={item_id}"
+        if platform == "youtube"
+        else f"https://www.bilibili.com/video/{item_id}"
+    )
 
     cmd = YTDLP + ["-j", url]
 
@@ -76,13 +81,17 @@ def handle_stream(params):
     platform = params.get("platform", "youtube")
     item_id = params.get("id", "")
 
-    url = f"https://www.youtube.com/watch?v={item_id}" if platform == "youtube" \
-          else f"https://www.bilibili.com/video/{item_id}"
+    url = (
+        f"https://www.youtube.com/watch?v={item_id}"
+        if platform == "youtube"
+        else f"https://www.bilibili.com/video/{item_id}"
+    )
 
     # 尝试先获取直接 URL（最优先）
     cmd = YTDLP + [
         "-g",  # 获取直接 URL
-        "-f", "bestaudio/best",
+        "-f",
+        "ba",
         url,
     ]
 
@@ -100,7 +109,7 @@ def handle_stream(params):
     except Exception:
         pass
 
-    # 回退到 pipe 模式
+    # 回退到 pipe 模式 (用 bestaudio/best 更稳健)
     return {
         "type": "stream",
         "cmd": YTDLP + ["-o", "-", "-f", "bestaudio/best", url],

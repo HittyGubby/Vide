@@ -35,14 +35,14 @@
   let historyTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
-    loadSongs();
+    loadLibrary();
   });
 
-  async function loadSongs() {
+  async function loadLibrary() {
     loading = true;
     error = null;
     try {
-      songs = await invoke("list_songs");
+      songs = await invoke("list_library_songs");
     } catch (e) {
       error = String(e);
       songs = [];
@@ -424,6 +424,7 @@
       <button
         class="col"
         class:dragging={dragColId === col.id}
+        class:col-duration={col.id === 'duration'}
         style="flex: {col.width}"
         draggable="true"
         onclick={() => toggleSort(col.id)}
@@ -449,7 +450,7 @@
     <div class="empty-state">
       <p class="empty-title">加载失败</p>
       <p class="empty-desc">{error}</p>
-      <button class="retry-btn" onclick={loadSongs}>重试</button>
+      <button class="retry-btn" onclick={loadLibrary}>重试</button>
     </div>
   {:else if filteredSongs.length === 0}
     <div class="empty-state">
@@ -485,7 +486,7 @@
             {/if}
           </div>
           {#each visibleColumns as col}
-            <div class="col" style="flex: {col.width}">
+            <div class="col" class:col-duration={col.id === 'duration'} style="flex: {col.width}">
               {#if col.id === "title"}
                 <span class="truncate song-title-cell">{song.title}</span>
               {:else if col.id === "artist"}
@@ -545,6 +546,7 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    user-select: none;
   }
 
   /* ── Search Bar ──────────────────────────────────── */
@@ -554,6 +556,7 @@
     gap: 8px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--border-subtle);
+    user-select: none;
   }
 
   .search-input-wrapper {
@@ -622,6 +625,7 @@
     color: var(--text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    user-select: none;
   }
 
   .col {
@@ -671,14 +675,13 @@
   .col-index {
     width: 36px;
     flex: none;
-    text-align: center;
+    justify-content: center;
   }
 
   .col-duration {
-    width: 70px;
-    flex: none;
-    text-align: right;
-    padding-right: 4px;
+    text-align: right !important;
+    justify-content: flex-end;
+    padding-right: 8px;
   }
 
   /* ── Song List ───────────────────────────────────── */
@@ -686,6 +689,7 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    user-select: none;
   }
 
   .song-row {
@@ -700,6 +704,7 @@
     font-size: 13px;
     cursor: pointer;
     transition: background 0.1s;
+    user-select: none;
   }
 
   .song-row:hover {

@@ -43,6 +43,13 @@
       } catch (e) {
         console.error("stop error:", e);
       }
+    } else if (player.mediaId) {
+      try {
+        await invoke("play_song", { id: player.mediaId });
+        player.isPlaying = true;
+      } catch (e) {
+        console.error("play error:", e);
+      }
     }
   }
 
@@ -50,7 +57,46 @@
     ui.showPlayerDetail = false;
   }
 
+  async function seekTrack(e: MouseEvent) {
+    if (!player.isPlaying || player.duration <= 0) return;
+    const target = e.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    const targetSecs = pct * player.duration;
+    try {
+      await invoke("seek", { positionSecs: targetSecs });
+      player.elapsed = targetSecs;
+    } catch {
+      /* seek not supported */
+    }
+  }
+
   // Tags display will be added when player store provides tag data
+
+  // ── Lyrics ────────────────────────────────────────────
+
+  let lyricsText = $state<string | null>(null);
+  let lyricsLoading = $state(false);
+
+  // Fetch lyrics when the playing song changes
+  $effect(() => {
+    const id = player.mediaId;
+    if (id && player.isPlaying) {
+      lyricsLoading = true;
+      invoke("get_lyrics", { songId: id })
+        .then((lyrics) => {
+          lyricsText = (lyrics as string | null) ?? null;
+        })
+        .catch(() => {
+          lyricsText = null;
+        })
+        .finally(() => {
+          lyricsLoading = false;
+        });
+    } else {
+      lyricsText = null;
+    }
+  });
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -75,11 +121,23 @@
 
     <!-- Right: Lyrics -->
     <div class="lyrics-section">
-      <div class="lyrics-placeholder">
-        <span class="lyrics-icon">𝅘𝅥𝅮</span>
-        <p class="lyrics-text">歌词功能即将支持</p>
-        <p class="lyrics-sub">需要插件系统提供歌词源</p>
-      </div>
+      {#if lyricsLoading}
+        <div class="lyrics-placeholder">
+          <p class="lyrics-text">加载歌词...</p>
+        </div>
+      {:else if lyricsText}
+        <div class="lyrics-content">
+          {#each lyricsText.split("\n") as line}
+            <p class="lyrics-line" class:lyrics-empty={!line.trim()}>{line}</p>
+          {/each}
+        </div>
+      {:else}
+        <div class="lyrics-placeholder">
+          <span class="lyrics-icon">𝅘𝅥𝅮</span>
+          <p class="lyrics-text">暂无歌词</p>
+          <p class="lyrics-sub">歌词由插件系统提供</p>
+        </div>
+      {/if}
     </div>
   </div>
 
@@ -107,7 +165,7 @@
   <div class="detail-bottom">
     <!-- Progress bar (left) -->
     <div class="progress-section">
-      <div class="progress-track-large">
+      <div class="progress-track-large" onclick={seekTrack}>
         <div class="progress-fill-large" style="width: {progressPct}%"></div>
       </div>
       <span class="detail-time">{elapsedFormatted} / {durationFormatted}</span>
@@ -158,6 +216,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    user-select: none;
   }
 
   /* ── Top Section ──────────────────────────────────── */
@@ -253,6 +312,23 @@
     font-size: 11px;
   }
 
+  .lyrics-content {
+    padding: 8px 0;
+    line-height: 1.8;
+    overflow-y: auto;
+  }
+
+  .lyrics-line {
+    font-size: 14px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .lyrics-empty {
+    height: 0.5em;
+  }
+
   /* ── Advanced Settings ────────────────────────────── */
   .advanced-settings {
     display: flex;
@@ -305,11 +381,19 @@
     border-radius: 3px;
     overflow: hidden;
     cursor: pointer;
+    position: relative;
+  }
+
+  .progress-track-large::before {
+    content: "";
+    position: absolute;
+    inset: -8px 0;
   }
 
   .progress-fill-large {
     height: 100%;
     background: var(--accent-primary);
+    pointer-events: none;
     border-radius: 3px;
     transition: width 0.5s linear;
   }

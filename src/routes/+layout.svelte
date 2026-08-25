@@ -92,6 +92,7 @@
     height: 100vh;
     background: var(--bg-base);
     color: var(--text-primary);
+    user-select: none;
   }
 
   .main-area {
@@ -105,5 +106,6 @@
     overflow-y: auto;
     overflow-x: hidden;
     background: var(--bg-base);
+    user-select: none;
   }
 </style>
