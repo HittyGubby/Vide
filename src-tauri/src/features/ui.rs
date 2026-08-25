@@ -265,6 +265,103 @@ pub async fn resolve_song(
     Ok(song)
 }
 
+// ── Search Presets ───────────────────────────────────────────────
+
+/// List all saved search presets.
+#[tauri::command]
+pub async fn list_search_presets(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::models::SearchPreset>, String> {
+    state
+        .db
+        .list_search_presets()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Create or update a search preset. Returns the saved preset.
+#[tauri::command]
+pub async fn save_search_preset(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    query: String,
+) -> Result<crate::models::SearchPreset, String> {
+    let mut presets = state
+        .db
+        .list_search_presets()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Reuse the existing preset with the same name, else append a new one.
+    if let Some(existing) = presets.iter_mut().find(|p| p.name == name) {
+        existing.query = query;
+        let saved = existing.clone();
+        state
+            .db
+            .save_search_presets(&presets)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(saved);
+    }
+
+    let preset = crate::models::SearchPreset {
+        id: format!("preset_{}", presets.len() + 1),
+        name,
+        query,
+    };
+    presets.push(preset.clone());
+    state
+        .db
+        .save_search_presets(&presets)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(preset)
+}
+
+/// Delete a search preset by id.
+#[tauri::command]
+pub async fn delete_search_preset(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let mut presets = state
+        .db
+        .list_search_presets()
+        .await
+        .map_err(|e| e.to_string())?;
+    presets.retain(|p| p.id != id);
+    state
+        .db
+        .save_search_presets(&presets)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get the ID of the last-selected search preset.
+#[tauri::command]
+pub async fn get_last_search_preset(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    state
+        .db
+        .get_last_search_preset()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the last-selected search preset ID.
+#[tauri::command]
+pub async fn set_last_search_preset(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    state
+        .db
+        .set_last_search_preset(&id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Search ───────────────────────────────────────────────────────
 
 #[tauri::command]

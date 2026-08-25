@@ -2,17 +2,37 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import { player } from "$lib/stores/player.svelte";
+  import { ui } from "$lib/stores/ui.svelte";
   import {
     Play,
     Pause,
     SkipBack,
     SkipForward,
-    Volume2,
     Tag,
   } from "lucide-svelte";
-  import { ui } from "$lib/stores/ui.svelte";
+  import TagEditor from "$lib/components/tag/TagEditor.svelte";
+  import VolumeControl from "$lib/components/player/VolumeControl.svelte";
+  import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
+  import type { Song } from "$lib/types";
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+  // Tag editor for the currently playing song
+  let tagSong = $state<Song | null>(null);
+
+  async function openTagEditor() {
+    if (!player.mediaId) return;
+    try {
+      const song = await invoke<Song>("get_song", { id: player.mediaId });
+      if (song) tagSong = song;
+    } catch (e) {
+      console.error("get song for tag error:", e);
+    }
+  }
+
+  function closeTagEditor() {
+    tagSong = null;
+  }
 
   onMount(() => {
     player.poll();
@@ -38,139 +58,150 @@
     }
   }
 
-  function formatDuration(seconds?: number): string {
-    if (!seconds || seconds <= 0) return "--:--";
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  }
-
-  let durationFormatted = $derived(formatDuration(player.duration));
-
   function formatTime(secs: number): string {
-    if (secs <= 0) return "0:00";
+    if (!secs || secs <= 0) return "0:00";
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
+    return m + ":" + s.toString().padStart(2, "0");
   }
 
   let currentTime = $derived(formatTime(player.elapsed));
+  let totalTime = $derived(formatTime(player.duration));
+
+  function openDetail() {
+    if (player.mediaId) ui.showPlayerDetail = true;
+  }
+
+  // ── Lyrics line (bottom-left) ────────────────────
+  let lyricsLine = $state<string | null>(null);
+  let lyrics = $state<{ t: number; text: string }[]>([]);
+
+  $effect(() => {
+    const id = player.mediaId;
+    if (!id) {
+      lyrics = [];
+      lyricsLine = null;
+      return;
+    }
+    invoke<string | null>("get_lyrics", { songId: id })
+      .then((raw) => {
+        if (!raw) {
+          lyrics = [];
+          lyricsLine = null;
+          return;
+        }
+        const parsed = parseLrc(raw);
+        lyrics = parsed;
+      })
+      .catch(() => {
+        lyrics = [];
+        lyricsLine = null;
+      });
+  });
+
+  function parseLrc(raw: string): { t: number; text: string }[] {
+    const out: { t: number; text: string }[] = [];
+    for (const line of raw.split("\n")) {
+      const m = line.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
+      if (m) {
+        const t = parseInt(m[1]) * 60 + parseFloat(m[2]);
+        out.push({ t, text: m[3] || "" });
+      }
+    }
+    out.sort((a, b) => a.t - b.t);
+    return out;
+  }
+
+  let activeLyric = $derived.by(() => {
+    if (lyrics.length === 0) return null;
+    const el = player.elapsed;
+    let cur: string | null = null;
+    for (const l of lyrics) {
+      if (l.t <= el) cur = l.text;
+      else break;
+    }
+    return cur;
+  });
+
+  // Subtitle: current lyric line, else artist (Unknown shown as empty).
+  let subtitle = $derived(
+    activeLyric?.trim() || (player.artist && player.artist !== "Unknown" ? player.artist : ""),
+  );
 </script>
 
 <footer class="playerbar">
-  <!-- Left: Album art + song info -->
   <div class="player-left">
-    <div class="album-art" onclick={() => (ui.showPlayerDetail = true)}>
-      {#if player.mediaId && player.isPlaying}
-        <span class="equalizer">𝅘𝅥𝅮</span>
+    <button class="album-art" onclick={openDetail} title="播放详情" aria-label="播放详情">
+      {#if player.cover}
+        <img src={player.cover} alt="" class="cover" />
       {:else}
-        <svg
-          class="note-icon"
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M9 18V5l12-2v13" />
-          <circle cx="6" cy="18" r="3" />
-          <circle cx="18" cy="16" r="3" />
-        </svg>
+        <span class="monogram">V</span>
       {/if}
-    </div>
-    <div class="song-info">
-      <span class="song-title truncate">{player.title}</span>
-      <span class="song-artist truncate">{player.artist}</span>
+    </button>
+
+    <div class="info">
+      <div class="info-title truncate">{player.title}</div>
+      <div class="info-sub truncate">
+        {#if subtitle}
+          <span class="lyric-text">{subtitle}</span>
+        {:else}
+          <span class="idle-text">选择一首歌曲开始播放</span>
+        {/if}
+      </div>
     </div>
   </div>
 
-  <!-- Center: time info -->
-  <div class="player-center">
+  <!-- Time indicator -->
+  <div class="time-indicator">
     <span class="time-badge">{currentTime}</span>
     <span class="time-sep">/</span>
-    <span class="time-total">{durationFormatted}</span>
+    <span class="time-total">{totalTime}</span>
   </div>
 
-  <!-- Right: playback controls + extras -->
-  <div class="player-actions">
-    <button class="ctrl-btn" title="标签编辑" aria-label="标签">
+  <!-- Control buttons (localized) -->
+  <div class="player-tools">
+    <button class="ctrl-btn" title="编辑标签" aria-label="编辑标签" onclick={openTagEditor}>
       <Tag size={15} />
     </button>
-    <button class="ctrl-btn" title="音量" aria-label="音量">
-      <Volume2 size={16} />
-    </button>
+
+    <VolumeControl />
+    <PlayModeControl />
   </div>
 
   <div class="play-controls">
-    <button class="ctrl-btn ctrl-skip" title="上一首" aria-label="上一首">
+    <button class="ctrl-btn skip" title="上一首" aria-label="上一首" disabled>
       <SkipBack size={18} />
     </button>
-    <button
-      class="ctrl-btn play-btn"
-      onclick={togglePlay}
-      aria-label="播放/暂停"
-    >
+    <button class="ctrl-btn play-btn" onclick={togglePlay} aria-label="播放/暂停">
       {#if player.isPlaying}
         <Pause size={20} fill="currentColor" />
       {:else}
         <Play size={20} fill="currentColor" />
       {/if}
     </button>
-    <button class="ctrl-btn ctrl-skip" title="下一首" aria-label="下一首">
+    <button class="ctrl-btn skip" title="下一首" aria-label="下一首" disabled>
       <SkipForward size={18} />
     </button>
   </div>
-
-  <!-- Resize grip -->
-  <div class="resize-grip">
-    <svg width="10" height="10" viewBox="0 0 10 10">
-      <line
-        x1="7"
-        y1="10"
-        x2="10"
-        y2="7"
-        stroke="currentColor"
-        stroke-width="1"
-        opacity="0.3"
-      />
-      <line
-        x1="4"
-        y1="10"
-        x2="10"
-        y2="4"
-        stroke="currentColor"
-        stroke-width="1"
-        opacity="0.3"
-      />
-      <line
-        x1="1"
-        y1="10"
-        x2="10"
-        y2="1"
-        stroke="currentColor"
-        stroke-width="1"
-        opacity="0.3"
-      />
-    </svg>
-  </div>
 </footer>
+
+{#if tagSong}
+  <TagEditor song={tagSong} onclose={closeTagEditor} />
+{/if}
 
 <style>
   .playerbar {
     display: flex;
     align-items: center;
     height: var(--playerbar-height);
-    background: var(--bg-surface);
-    border-top: none;
-    padding: 0 8px 0 12px;
-    gap: 8px;
+    background: var(--color-base-200);
+    border-top: 1px solid var(--panel-border-strong);
+    padding: 0 8px 0 10px;
+    gap: 12px;
     user-select: none;
+    flex-shrink: 0;
   }
 
-  /* ── Left Section ────────────────────────────────── */
   .player-left {
     display: flex;
     align-items: center;
@@ -180,78 +211,63 @@
   }
 
   .album-art {
-    width: 44px;
-    height: 44px;
+    width: 48px;
+    height: 48px;
     border-radius: 6px;
-    background: var(--bg-elevated);
+    background: var(--color-base-300);
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    color: var(--text-tertiary);
+    color: var(--color-base-content) / 0.6;
     cursor: pointer;
-    transition: background 0.15s;
+    overflow: hidden;
+    border: none;
+    transition: opacity 0.15s;
   }
+  .album-art:hover { opacity: 0.85; }
+  .cover { width: 100%; height: 100%; object-fit: cover; }
+  .monogram { font-weight: 700; font-size: 18px; font-family: Consolas, "Courier New", monospace; }
 
-  .album-art:hover {
-    background: var(--bg-hover);
-  }
-
-  .note-icon {
-    opacity: 0.5;
-  }
-
-  .equalizer {
-    font-size: 22px;
-    color: var(--accent-primary);
-    animation: pulse 1s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 0.6;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  .song-info {
+  .info {
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
-  }
-
-  .song-title {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-primary);
-  }
-
-  .song-artist {
-    font-size: 11px;
-    color: var(--text-secondary);
-  }
-
-  /* ── Center ──────────────────────────────────────── */
-  .player-center {
-    display: flex;
-    align-items: center;
     justify-content: center;
   }
 
-  .time-badge {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    font-variant-numeric: tabular-nums;
-    min-width: 36px;
-    text-align: center;
+  .info-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-base-content);
   }
 
-  /* ── Action Buttons ──────────────────────────────── */
-  .player-actions {
+  .info-sub {
+    font-size: 11px;
+    color: var(--color-base-content) / 0.6;
+    height: 14px;
+    display: flex;
+    align-items: center;
+  }
+
+  .time-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: none;
+  }
+
+  .time-badge, .time-total {
+    font-size: 12px;
+    color: var(--color-base-content) / 0.6;
+    font-variant-numeric: tabular-nums;
+    min-width: 34px;
+    text-align: center;
+  }
+  .time-sep { color: var(--color-base-content) / 0.4; margin: 0 2px; }
+
+  .player-tools {
     display: flex;
     align-items: center;
     gap: 2px;
@@ -264,66 +280,20 @@
     width: 30px;
     height: 30px;
     border-radius: 6px;
-    color: var(--text-secondary);
+    color: var(--color-base-content) / 0.7;
     background: none;
     border: none;
-    transition:
-      background 0.15s,
-      color 0.15s;
+    transition: background 0.15s, color 0.15s;
   }
+  .ctrl-btn:hover:not(:disabled) { background: var(--color-base-300); color: var(--color-base-content); }
+  .ctrl-btn:disabled { opacity: 0.4; cursor: default; }
 
-  .ctrl-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
-
-  .ctrl-btn:active {
-    background: var(--bg-active);
-  }
-
-  /* ── Play Controls (far right) ───────────────────── */
-  .play-controls {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-
-  .ctrl-skip {
-    width: 36px;
-    height: 36px;
-  }
-
+  .play-controls { display: flex; align-items: center; gap: 2px; }
+  .ctrl-btn.skip { width: 36px; height: 36px; }
   .play-btn {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: var(--bg-elevated);
-    color: var(--text-primary);
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--color-base-300);
+    color: var(--color-base-content);
   }
-
-  .play-btn:hover {
-    background: var(--bg-hover);
-    color: var(--accent-primary);
-  }
-
-  .play-btn:active {
-    background: var(--bg-active);
-  }
-
-  /* ── Resize Grip ─────────────────────────────────── */
-  .resize-grip {
-    position: fixed;
-    bottom: 0;
-    right: 0;
-    width: 16px;
-    height: 16px;
-    display: flex;
-    align-items: flex-end;
-    justify-content: flex-end;
-    padding: 3px;
-    color: var(--text-tertiary);
-    cursor: se-resize;
-    z-index: 200;
-    pointer-events: none;
-  }
+  .play-btn:hover { color: var(--color-primary); }
 </style>

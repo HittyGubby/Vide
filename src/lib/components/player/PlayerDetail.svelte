@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { player } from "$lib/stores/player.svelte";
   import { ui } from "$lib/stores/ui.svelte";
   import {
@@ -8,9 +9,17 @@
     Pause,
     SkipBack,
     SkipForward,
-    Music,
     Tag,
+    Gauge,
+    ChevronDown,
+    Minus,
+    Maximize,
+    X,
   } from "lucide-svelte";
+  import VolumeControl from "$lib/components/player/VolumeControl.svelte";
+  import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
+
+  const appWindow = getCurrentWindow();
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -20,20 +29,19 @@
     return () => clearInterval(pollTimer);
   });
 
-  let elapsedFormatted = $derived(formatTime(player.elapsed));
-  let durationFormatted = $derived(formatTime(player.duration));
   let progressPct = $derived(
-    player.duration > 0
-      ? Math.min((player.elapsed / player.duration) * 100, 100)
-      : 0,
+    player.duration > 0 ? Math.min((player.elapsed / player.duration) * 100, 100) : 0,
   );
 
   function formatTime(secs: number): string {
-    if (secs <= 0) return "0:00";
+    if (!secs || secs <= 0) return "0:00";
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
+    return m + ":" + s.toString().padStart(2, "0");
   }
+
+  let elapsedFormatted = $derived(formatTime(player.elapsed));
+  let durationFormatted = $derived(formatTime(player.duration));
 
   async function togglePlay() {
     if (player.isPlaying) {
@@ -53,10 +61,6 @@
     }
   }
 
-  function close() {
-    ui.showPlayerDetail = false;
-  }
-
   async function seekTrack(e: MouseEvent) {
     if (!player.isPlaying || player.duration <= 0) return;
     const target = e.currentTarget as HTMLElement;
@@ -71,14 +75,23 @@
     }
   }
 
-  // Tags display will be added when player store provides tag data
+  function close() {
+    ui.showPlayerDetail = false;
+  }
+  function minimize() {
+    appWindow.minimize();
+  }
+  function toggleMaximize() {
+    appWindow.toggleMaximize();
+  }
+  function closeWindow() {
+    appWindow.close();
+  }
 
-  // ── Lyrics ────────────────────────────────────────────
-
+  // Lyrics
   let lyricsText = $state<string | null>(null);
   let lyricsLoading = $state(false);
 
-  // Fetch lyrics when the playing song changes
   $effect(() => {
     const id = player.mediaId;
     if (id && player.isPlaying) {
@@ -97,34 +110,62 @@
       lyricsText = null;
     }
   });
+
+  // Status text shown next to the time (like LX's "Failed to get lyrics").
+  let lyricStatusText = $derived(
+    lyricsLoading ? "加载歌词..." : lyricsText ? firstLyricLine(lyricsText) : "暂无歌词",
+  );
+
+  function firstLyricLine(t: string): string {
+    const l = t.split("\n").map((s) => s.trim()).find((s) => s.length > 0);
+    return l ?? "暂无歌词";
+  }
+
+  // ── Playback rate popup ──────────────────────────
+  let rateOpen = $state(false);
+  let rateTimer: ReturnType<typeof setTimeout> | undefined;
+  const rates = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  let rate = $state(1);
+
+  function rateEnter() {
+    clearTimeout(rateTimer);
+    rateOpen = true;
+  }
+  function rateLeave() {
+    rateTimer = setTimeout(() => (rateOpen = false), 150);
+  }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="detail-overlay"
-  onkeydown={(e) => {
-    if (e.key === "Escape") close();
-  }}
-  role="presentation"
->
-  <!-- Top: Album + Lyrics -->
-  <div class="detail-top">
-    <!-- Left: Album art + song info -->
-    <div class="album-section">
-      <div class="album-art-large">
-        <Music size={64} class="album-placeholder-icon" />
+<div class="detail-overlay" onkeydown={(e) => { if (e.key === "Escape") close(); }} role="presentation">
+  <div class="detail-bg"></div>
+
+  <div class="detail-header">
+    <div class="hd-spacer"></div>
+    <button class="hd-btn" onclick={close} title="收起"><ChevronDown size={18} /></button>
+    <button class="hd-btn" onclick={minimize} title="最小化"><Minus size={16} /></button>
+    <button class="hd-btn" onclick={toggleMaximize} title="最大化"><Maximize size={15} /></button>
+    <button class="hd-btn hd-close" onclick={closeWindow} title="关闭"><X size={16} /></button>
+  </div>
+
+  <div class="detail-main">
+    <div class="detail-left">
+      <div class="cover-large">
+        {#if player.cover}
+          <img src={player.cover} alt="" class="cover-img" />
+        {:else}
+          <span class="monogram-large">V</span>
+        {/if}
       </div>
-      <h1 class="detail-title">{player.title}</h1>
-      <p class="detail-artist">{player.artist}</p>
-      <!-- Tags will be shown when backend returns tag data -->
+      <div class="meta">
+        <p><span class="meta-label">Title:</span> {player.title}</p>
+        <p><span class="meta-label">Artist:</span> {player.artist && player.artist !== "Unknown" ? player.artist : ""}</p>
+        <p><span class="meta-label">Album:</span> {player.album && player.album !== "Unknown" ? player.album : ""}</p>
+      </div>
     </div>
 
-    <!-- Right: Lyrics -->
-    <div class="lyrics-section">
+    <div class="detail-lyrics">
       {#if lyricsLoading}
-        <div class="lyrics-placeholder">
-          <p class="lyrics-text">加载歌词...</p>
-        </div>
+        <p class="lyrics-hint">加载歌词...</p>
       {:else if lyricsText}
         <div class="lyrics-content">
           {#each lyricsText.split("\n") as line}
@@ -133,7 +174,7 @@
         </div>
       {:else}
         <div class="lyrics-placeholder">
-          <span class="lyrics-icon">𝅘𝅥𝅮</span>
+          <span class="lyrics-icon">&#9835;</span>
           <p class="lyrics-text">暂无歌词</p>
           <p class="lyrics-sub">歌词由插件系统提供</p>
         </div>
@@ -141,65 +182,44 @@
     </div>
   </div>
 
-  <!-- Advanced settings -->
-  <div class="advanced-settings">
-    <button class="setting-chip" disabled>
-      <span>速度</span>
-      <span class="chip-value">1.0x</span>
-    </button>
-    <button class="setting-chip" disabled>
-      <span>均衡器</span>
-      <span class="chip-value">默认</span>
-    </button>
-    <button class="setting-chip" disabled>
-      <span>提供者</span>
-      <span class="chip-value">yt-dlp</span>
-    </button>
-    <button class="setting-chip" disabled>
-      <span>音质</span>
-      <span class="chip-value">最佳</span>
-    </button>
-  </div>
-
-  <!-- Bottom: Progress + Controls on one row -->
   <div class="detail-bottom">
-    <!-- Progress bar (left) -->
-    <div class="progress-section">
-      <div class="progress-track-large" onclick={seekTrack}>
-        <div class="progress-fill-large" style="width: {progressPct}%"></div>
+    <!-- Left block: controls (top) / progress (mid) / time (bottom) -->
+    <div class="bottom-left">
+      <!-- control icons, right-aligned -->
+      <div class="tools-row">
+        <button class="d-btn" title="播放速度" aria-label="播放速度" onclick={() => (rateOpen = !rateOpen)}>
+          <Gauge size={16} />
+        </button>
+        <VolumeControl />
+        <PlayModeControl />
+        <button class="d-btn" title="编辑标签" aria-label="编辑标签">
+          <Tag size={16} />
+        </button>
       </div>
-      <span class="detail-time">{elapsedFormatted} / {durationFormatted}</span>
+
+      <!-- progress bar fills left width -->
+      <div class="progress-track" role="slider" tabindex="0" aria-label="播放进度" onclick={seekTrack}>
+        <div class="progress-fill" style="width: {progressPct}%"></div>
+      </div>
+
+      <!-- time, right-aligned -->
+      <div class="time-row">
+        <span class="lyric-status truncate">{lyricStatusText}</span>
+        <span class="detail-time">{elapsedFormatted} / {durationFormatted}</span>
+      </div>
     </div>
 
-    <!-- Play controls (right) -->
-    <div class="detail-controls">
-      <button
-        class="ctrl-btn-large"
-        title="上一首"
-        aria-label="上一首"
-        disabled
-      >
-        <SkipBack size={20} />
-      </button>
-      <button
-        class="ctrl-btn-large play-btn-large"
-        onclick={togglePlay}
-        aria-label="播放/暂停"
-      >
+    <!-- Right block: transport buttons -->
+    <div class="transport-group">
+      <button class="d-btn big" title="上一首" disabled><SkipBack size={22} /></button>
+      <button class="d-btn play-big" onclick={togglePlay} title="播放/暂停">
         {#if player.isPlaying}
-          <Pause size={24} fill="currentColor" />
+          <Pause size={26} fill="currentColor" />
         {:else}
-          <Play size={24} fill="currentColor" />
+          <Play size={26} fill="currentColor" />
         {/if}
       </button>
-      <button
-        class="ctrl-btn-large"
-        title="下一首"
-        aria-label="下一首"
-        disabled
-      >
-        <SkipForward size={20} />
-      </button>
+      <button class="d-btn big" title="下一首" disabled><SkipForward size={22} /></button>
     </div>
   </div>
 </div>
@@ -207,247 +227,169 @@
 <style>
   .detail-overlay {
     position: fixed;
-    top: var(--titlebar-height);
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
     z-index: 300;
-    background: var(--bg-base);
+    background: var(--color-base-200);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    user-select: none;
   }
 
-  /* ── Top Section ──────────────────────────────────── */
-  .detail-top {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 60px;
-    padding: 40px 60px;
-    min-height: 0;
-  }
-
-  /* ── Album Art ────────────────────────────────────── */
-  .album-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-    max-width: 400px;
-  }
-
-  .album-art-large {
-    width: 240px;
-    height: 240px;
-    border-radius: 12px;
-    background: var(--bg-elevated);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  .album-placeholder-icon {
-    color: var(--text-tertiary);
-    opacity: 0.5;
-  }
-
-  .detail-title {
-    font-size: 22px;
-    font-weight: 600;
-    color: var(--text-primary);
-    text-align: center;
-    line-height: 1.2;
-  }
-
-  .detail-artist {
-    font-size: 15px;
-    color: var(--text-secondary);
-    text-align: center;
-  }
-
-  .detail-tags {
-    font-size: 12px;
-    color: var(--accent-primary);
-    text-align: center;
-    opacity: 0.8;
-  }
-
-  /* ── Lyrics ───────────────────────────────────────── */
-  .lyrics-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    overflow-y: auto;
-    max-width: 400px;
-    max-height: 100%;
-  }
-
-  .lyrics-placeholder {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-tertiary);
-    text-align: center;
-  }
-
-  .lyrics-icon {
-    font-size: 48px;
-    opacity: 0.3;
-  }
-
-  .lyrics-text {
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-secondary);
-  }
-
-  .lyrics-sub {
-    font-size: 11px;
-  }
-
-  .lyrics-content {
-    padding: 8px 0;
-    line-height: 1.8;
-    overflow-y: auto;
-  }
-
-  .lyrics-line {
-    font-size: 14px;
-    color: var(--text-secondary);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  .lyrics-empty {
-    height: 0.5em;
-  }
-
-  /* ── Advanced Settings ────────────────────────────── */
-  .advanced-settings {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 12px 40px 8px;
-    flex-shrink: 0;
-  }
-
-  .setting-chip {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 12px;
-    border-radius: 16px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-secondary);
-    font-size: 11px;
-    cursor: default;
-    opacity: 0.7;
-  }
-
-  .chip-value {
-    color: var(--text-tertiary);
-    font-weight: 500;
-  }
-
-  /* ── Bottom Row ───────────────────────────────────── */
-  .detail-bottom {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    padding: 12px 40px 24px;
-    flex-shrink: 0;
-  }
-
-  .progress-section {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .progress-track-large {
-    flex: 1;
-    height: 6px;
-    background: var(--bg-elevated);
-    border-radius: 3px;
-    overflow: hidden;
-    cursor: pointer;
-    position: relative;
-  }
-
-  .progress-track-large::before {
-    content: "";
+  .detail-bg {
     position: absolute;
-    inset: -8px 0;
+    inset: 0;
+    background: linear-gradient(160deg, var(--color-base-300) / 0.4, var(--color-base-200));
+    z-index: -1;
   }
 
-  .progress-fill-large {
-    height: 100%;
-    background: var(--accent-primary);
-    pointer-events: none;
-    border-radius: 3px;
-    transition: width 0.5s linear;
-  }
-
-  .detail-time {
-    font-size: 13px;
-    color: var(--text-tertiary);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    min-width: 90px;
-    text-align: right;
-  }
-
-  /* ── Controls ─────────────────────────────────────── */
-  .detail-controls {
+  .detail-header {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 8px 14px;
+    flex-shrink: 0;
   }
 
-  .ctrl-btn-large {
+  .hd-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 34px; height: 30px; border-radius: 6px;
+    color: var(--color-base-content) / 0.75; background: none; border: none;
+  }
+  .hd-btn:hover { background: var(--color-base-300); color: var(--color-base-content); }
+  .hd-close:hover { background: var(--color-error); color: var(--color-error-content); }
+
+  .detail-main {
+    flex: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 80px;
+    padding: 20px 60px 0 130px;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .detail-left {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 18px;
+  }
+
+  .cover-large {
+    width: 280px;
+    height: 280px;
+    border-radius: 8px;
+    background: var(--color-base-300);
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    color: var(--text-secondary);
-    background: none;
-    border: none;
-    transition:
-      background 0.15s,
-      color 0.15s;
+    overflow: hidden;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.4);
+  }
+  .cover-img { width: 100%; height: 100%; object-fit: cover; }
+  .monogram-large {
+    font-weight: 700; font-size: 64px;
+    color: var(--color-base-content) / 0.35;
+    font-family: Consolas, "Courier New", monospace;
   }
 
-  .ctrl-btn-large:hover:not(:disabled) {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+  .meta {
+    width: 100%; display: flex; flex-direction: column; gap: 4px;
+    font-size: 15px; color: var(--color-base-content);
+  }
+  .meta-label { color: var(--color-base-content) / 0.55; margin-right: 4px; }
+
+  .detail-lyrics {
+    flex: 1; max-width: 420px; height: 100%; max-height: 72%;
+    overflow-y: auto; display: flex; flex-direction: column; justify-content: center;
+  }
+  .lyrics-content { padding: 8px 0; line-height: 1.9; }
+  .lyrics-line { font-size: 14px; color: var(--color-base-content) / 0.85; white-space: pre-wrap; word-break: break-word; }
+  .lyrics-empty { height: 0.5em; }
+  .lyrics-placeholder {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    color: var(--color-base-content) / 0.55; text-align: center;
+  }
+  .lyrics-icon { font-size: 40px; opacity: 0.4; }
+  .lyrics-text { font-size: 14px; font-weight: 500; }
+  .lyrics-sub { font-size: 11px; }
+  .lyrics-hint { text-align: center; color: var(--color-base-content) / 0.55; }
+
+  .detail-bottom {
+    flex-shrink: 0;
+    padding: 0 28px 20px 130px;
+    display: flex;
+    align-items: flex-end;
+    gap: 22px;
   }
 
-  .ctrl-btn-large:disabled {
-    opacity: 0.3;
-    cursor: default;
+  .bottom-left {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
 
-  .play-btn-large {
-    width: 56px;
-    height: 56px;
-    background: var(--bg-elevated);
-    color: var(--text-primary);
+  .tools-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
   }
 
-  .play-btn-large:hover {
-    background: var(--bg-hover);
-    color: var(--accent-primary);
+  .progress-track {
+    width: 100%; height: 6px; background: var(--color-base-300);
+    border-radius: 3px; overflow: hidden; cursor: pointer; position: relative;
   }
+  .progress-track::before { content: ""; position: absolute; inset: -8px 0; }
+  .progress-fill { height: 100%; background: var(--color-primary); border-radius: 3px; pointer-events: none; transition: width 0.4s linear; }
+
+  .time-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  .detail-time { font-size: 12px; color: var(--color-base-content) / 0.7; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .lyric-status { font-size: 12px; color: var(--color-base-content) / 0.5; max-width: 60%; }
+
+  .transport-group { display: flex; align-items: center; gap: 8px; flex: none; }
+
+  .pop-wrap { position: relative; display: flex; align-items: center; }
+
+  .popup {
+    position: absolute; bottom: 44px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--color-base-300);
+    border: 1px solid var(--color-base-content) / 0.1;
+    border-radius: 8px; padding: 4px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    z-index: 60; white-space: nowrap;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .pop-item {
+    padding: 5px 12px; border-radius: 5px; font-size: 12px;
+    background: none; border: none; color: var(--color-base-content) / 0.85;
+    text-align: left;
+  }
+  .pop-item:hover { background: var(--color-base-200); color: var(--color-base-content); }
+  .pop-item.active { color: var(--color-primary); }
+
+  .d-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; border-radius: 50%;
+    color: var(--color-base-content) / 0.75;
+    background: none; border: none; transition: background 0.15s, color 0.15s;
+  }
+  .d-btn:hover:not(:disabled) { background: var(--color-base-300); color: var(--color-base-content); }
+  .d-btn:disabled { opacity: 0.4; cursor: default; }
+  .d-btn.big { width: 46px; height: 46px; }
+  .d-btn.play-big {
+    width: 60px; height: 60px;
+    background: var(--color-base-300);
+    color: var(--color-base-content);
+  }
+  .d-btn.play-big:hover { color: var(--color-primary); }
 </style>

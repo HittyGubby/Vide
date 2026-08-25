@@ -632,6 +632,40 @@ impl Database {
             .await?;
         Ok(())
     }
+
+    // ── Search Presets ─────────────────────────────────────────────
+
+    const SEARCH_PRESETS_KEY: &'static str = "search_presets";
+
+    /// List all saved search presets, in insertion order.
+    pub async fn list_search_presets(&self) -> Result<Vec<crate::models::SearchPreset>, DbErr> {
+        match self.get_setting(Self::SEARCH_PRESETS_KEY).await? {
+            Some(val) => Ok(serde_json::from_value(val).unwrap_or_default()),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Replace the full set of search presets.
+    pub async fn save_search_presets(
+        &self,
+        presets: &[crate::models::SearchPreset],
+    ) -> Result<(), DbErr> {
+        self.update_setting(Self::SEARCH_PRESETS_KEY, &serde_json::to_value(presets).unwrap())
+            .await
+    }
+
+    /// Get the ID of the last-selected search preset, if any.
+    pub async fn get_last_search_preset(&self) -> Result<Option<String>, DbErr> {
+        match self.get_setting("last_search_preset").await? {
+            Some(val) => Ok(val.as_str().map(str::to_string)),
+            None => Ok(None),
+        }
+    }
+
+    /// Persist the last-selected search preset ID.
+    pub async fn set_last_search_preset(&self, id: &str) -> Result<(), DbErr> {
+        self.update_setting("last_search_preset", &serde_json::json!(id)).await
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -760,5 +794,37 @@ mod tests {
 
         assert_eq!(loaded.name, "My Playlist");
         assert_eq!(loaded.entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_presets_roundtrip() {
+        let db = Database::open_in_memory().await.unwrap();
+
+        let presets = vec![
+            crate::models::SearchPreset {
+                id: "preset_1".to_string(),
+                name: "Russian Folk".to_string(),
+                query: "country:russia AND genre:folk".to_string(),
+            },
+            crate::models::SearchPreset {
+                id: "preset_2".to_string(),
+                name: "Pop".to_string(),
+                query: "genre:pop".to_string(),
+            },
+        ];
+
+        db.save_search_presets(&presets).await.unwrap();
+        let loaded = db.list_search_presets().await.unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "Russian Folk");
+        assert_eq!(loaded[1].query, "genre:pop");
+
+        // Last-selected round-trip
+        assert!(db.get_last_search_preset().await.unwrap().is_none());
+        db.set_last_search_preset("preset_1").await.unwrap();
+        assert_eq!(
+            db.get_last_search_preset().await.unwrap().unwrap(),
+            "preset_1"
+        );
     }
 }

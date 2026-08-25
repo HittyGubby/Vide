@@ -7,12 +7,12 @@
   let newRootPath = $state("");
   let showInput = $state(false);
   let scanning = $state(false);
-  let scanResult: {
+  let scanResult = $state<{
     scanned: number;
     added: number;
     skipped: number;
     errors: string[];
-  } | null = null;
+  } | null>(null);
   let exporting = $state(false);
   let exportDone = $state(false);
 

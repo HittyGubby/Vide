@@ -46,27 +46,33 @@
 | **`list_playlists` 命令** | ✅ | 列出所有播放列表 |
 | **进度条 Seek** | ✅ | mpv stdin 发送 `set time-pos` |
 
-### 前端 (Svelte)
+### 前端 (Svelte) — daisyUI 重构
+
+> 前端已整体重构为 **daisyUI (Tailwind v4) + lucide-svelte 图标库**，
+> 视觉结构对齐 LX Music（参考 `PROMPTS/search.png` / `list.png` / `detailed.png`）。
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
+| **UI 框架** | ✅ | daisyUI 5 + Tailwind v4（`@tailwindcss/vite`），`dark` 主题 |
+| **图标库** | ✅ | lucide-svelte |
 | **无边框窗口** | ✅ | 自定义标题栏 + Windows 风格控制按钮 |
 | **窗口大小持久化** | ✅ | localStorage 保存/恢复尺寸和最大化状态 |
-| **侧栏导航** | ✅ | 搜索/列表/设置 三个按钮 |
-| **歌曲列表** | ✅ | 可配置排序、列头拖拽、列显隐 |
-| **本地搜索** | ✅ | 客户端即时过滤 title/artist/album/paths |
+| **左侧图标栏** | ✅ | 搜索/列表/设置 三项，active 高亮 |
+| **搜索页 /search** | ✅ | 贴合 search.png：平台标签、Song/Playlist 切换、搜索历史 chips、结果列表 |
+| **列表库页 /** | ✅ | 左侧「搜索预设」侧栏 + 歌曲表格(可调列宽/排序/跳转详情)；列 = #/名称(flex:1)/标签/歌手/专辑/时长(52px固定) |
+| **播放详情覆盖层** | ✅ | 贴合 detailed_page.png：左侧图文块靠左；底部=左右两块(右=prev/play/next大按钮；左=上controls靠右/中进度条占满/下时间靠右)、maximize图标修复 |
+| **播放栏** | ✅ | 封面 + 歌名/歌手 + 时间 + 控制键 + 上一首/播放/下一首；音量/循环弹窗复用共享组件 |
+| **共享播放控制** | ✅ | `VolumeControl` + `PlayModeControl`（播放栏/详情页复用）；音量弹窗=百分比+静音checkbox+调节条；循环弹窗=3个toggler(单曲/列表、顺序/逆序、播完暂停/循环)组合成8种模式 |
+| **搜索预设** | ✅ | 侧栏「+」手动添加（名称+查询串），存 SQLite，点击即应用查询 |
 | **搜索历史** | ✅ | localStorage 持久化，最近 20 条 |
-| **插件搜索下拉 (标题栏)** | ✅ | Tab 切换平台，点击即播放 |
-| **播放栏** | ✅ | 显示当前歌曲、时间、播放/暂停 |
-| **进度条** | ✅ | 可点击 seek |
-| **全屏播放详情** | ✅ | 封面 + 歌词 + 进阶设置 + 控制 |
-| **歌词显示** | ✅ | 从后端获取并显示 |
+| **标题栏全局搜索** | ✅ | 回车 → 跳 `/search`，下拉显示本地自动补全 |
+| **进度条 Seek** | ✅ | 播放详情内可点击/键盘 seek |
 | **标签编辑悬浮窗** | ✅ | 按命名空间分组 + 增删 + 自动补全 |
 | **右键菜单** | ✅ | 歌曲行右键：播放/编辑标签/下载(占位) |
-| **导入 Modal** | ✅ | 本地 M3U 导入 + 在线链接（占位） |
-| **播放列表页** | ✅ | 显示已有列表 |
-| **设置页** | 🔶 半完成 | 库管理、数据导出、关于（库目录增删/扫描缺 onclick） |
+| **设置页** | ✅ | 库管理、数据导出、关于（功能不变，套用新主题） |
 | **JSON 导出** | ✅ | 全部歌曲导出为 JSON |
+
+> 说明：原 `/playlists` 路由已并入列表页的「搜索预设」侧栏（查询语言构建动态视图）。
 
 ### 插件系统
 
@@ -80,7 +86,7 @@
 
 ---
 
-## 3. Tauri 命令清单（共 24 个）
+## 3. Tauri 命令清单（共 29 个）
 
 ```rust
 // Library (4)
@@ -104,6 +110,13 @@ resolve_song(platform, id)      → Song
 // Search (2)
 fuzzy_search_songs(query) → Vec<FuzzyMatch>
 autocomplete(prefix)      → Vec<String>
+
+// Search Presets (5)
+list_search_presets()          → Vec<SearchPreset>
+save_search_preset(name, query) → SearchPreset
+delete_search_preset(id)        → ()
+get_last_search_preset()        → Option<String>
+set_last_search_preset(id)      → ()
 
 // Tags (4)
 get_meta_tags()           → Vec<MetaTag>

@@ -117,6 +117,12 @@ pub fn run() {
             // Search
             features::ui::fuzzy_search_songs,
             features::ui::autocomplete,
+            // Search Presets
+            features::ui::list_search_presets,
+            features::ui::save_search_preset,
+            features::ui::delete_search_preset,
+            features::ui::get_last_search_preset,
+            features::ui::set_last_search_preset,
             // Tags
             features::ui::get_meta_tags,
             features::ui::add_tag,

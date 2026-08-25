@@ -1,48 +1,243 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { Search, Tag, Play, Download, ListPlus } from "lucide-svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { Search, Play, Download, ListPlus, ExternalLink, Tag as TagIcon } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
-  import { searchStore } from "$lib/stores/search.svelte";
-  import SearchHistory from "$lib/components/search/SearchHistory.svelte";
+  import { searchPresets } from "$lib/stores/searchPresets.svelte";
+  import PresetPanel from "$lib/components/library/PresetPanel.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import ContextMenu from "$lib/components/song/ContextMenu.svelte";
   import type { Song } from "$lib/types";
   import type { MenuItem } from "$lib/components/song/ContextMenu.svelte";
 
+  type ColumnId = "num" | "name" | "tag" | "artist" | "album" | "time";
+
   interface ColumnDef {
-    id: string;
+    id: ColumnId;
     label: string;
-    width: string;
+    /** Flex rank (relative grow weight). name is 1 (fills remaining). */
+    flex: number;
+    /** Fixed pixel width for # and time columns (resize disabled). */
+    fixed?: number;
+    /** Minimum flex weight when resizing. */
+    min?: number;
   }
 
-  const ALL_COLUMNS: ColumnDef[] = [
-    { id: "title", label: "标题", width: "2fr" },
-    { id: "artist", label: "歌手", width: "1.5fr" },
-    { id: "album", label: "专辑", width: "1.5fr" },
-    { id: "tags", label: "标签", width: "1.5fr" },
-    { id: "duration", label: "时长", width: "70px" },
+  // Name column flex:1 → grows to fill remaining space; others use flex weights.
+  const COLUMN_DEFS: ColumnDef[] = [
+    { id: "num", label: "#", flex: 0, fixed: 40 },
+    { id: "name", label: "名称", flex: 1, min: 0.5 },
+    { id: "tag", label: "标签", flex: 0.55, min: 0.2 },
+    { id: "artist", label: "歌手", flex: 0.45, min: 0.15 },
+    { id: "album", label: "专辑", flex: 0.5, min: 0.2 },
+    { id: "time", label: "时长", flex: 0, fixed: 52 },
   ];
 
+  interface ColumnState {
+    id: ColumnId;
+    shown: boolean;
+    /** px for fixed columns; flex weight for flexible columns. */
+    width: number;
+  }
+
+  // Default order: # / name / tag / artist / album / time (name flex:1 fills rest).
+  const DEFAULT_COLUMNS: ColumnState[] = [
+    { id: "num", shown: true, width: 40 },
+    { id: "name", shown: true, width: 1 },
+    { id: "tag", shown: true, width: 0.55 },
+    { id: "artist", shown: true, width: 0.45 },
+    { id: "album", shown: true, width: 0.5 },
+    { id: "time", shown: true, width: 52 },
+  ];
+
+  const COL_KEY = "vide_list_columns";
+
+  function loadColumns(): ColumnState[] {
+    try {
+      const saved = localStorage.getItem(COL_KEY);
+      if (saved) {
+        const data = JSON.parse(saved) as ColumnState[];
+        return COLUMN_DEFS.map((def) => {
+          const found = data.find((c) => c.id === def.id);
+          return found
+            ? {
+                id: def.id,
+                shown: !!found.shown,
+                width: def.fixed != null ? def.fixed : Math.max(found.width, def.min ?? 0.1),
+              }
+            : { id: def.id, shown: true, width: def.fixed ?? def.flex };
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    return DEFAULT_COLUMNS.map((c) => ({ ...c }));
+  }
+
+  let columns = $state<ColumnState[]>(loadColumns());
+  let visibleColumns = $derived(columns.filter((c) => c.shown));
+  let dragColId = $state<ColumnId | null>(null);
+  let resizeColId = $state<ColumnId | null>(null);
+  let resizeStartX = $state(0);
+  let resizeStartWidth = $state(0);
+
+  function saveColumns() {
+    try {
+      localStorage.setItem(COL_KEY, JSON.stringify(columns));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function updateWidth(id: ColumnId, width: number) {
+    const def = COLUMN_DEFS.find((d) => d.id === id)!;
+    // Fixed columns (num/time) are not resizable.
+    if (def.fixed != null) return;
+    const col = columns.find((c) => c.id === id)!;
+    col.width = Math.max(width, def.min ?? 0.1);
+    columns = columns.map((c) => (c.id === id ? { ...c } : c));
+  }
+
+  // ── Reorder (drag header) — horizontal-only drag ghost ──
+  function handleHeaderDragStart(e: DragEvent, id: ColumnId) {
+    dragColId = id;
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    dt.setData("text/plain", id);
+    dt.effectAllowed = "move";
+    // Use a tiny horizontal bar as the drag image so the column text
+    // does not follow the cursor (only a horizontal ghost is shown).
+    const ghost = document.createElement("div");
+    ghost.style.width = "40px";
+    ghost.style.height = "4px";
+    ghost.style.background = "var(--color-primary)";
+    ghost.style.borderRadius = "2px";
+    ghost.style.opacity = "0.8";
+    document.body.appendChild(ghost);
+    dt.setDragImage(ghost, 20, 2);
+    setTimeout(() => ghost.remove(), 0);
+  }
+
+  function handleHeaderDragOver(e: DragEvent, id: ColumnId) {
+    e.preventDefault();
+    if (dragColId && dragColId !== id) {
+      (e.currentTarget as HTMLElement).classList.add("drop-target");
+    }
+  }
+
+  function handleHeaderDragLeave(e: DragEvent) {
+    (e.currentTarget as HTMLElement).classList.remove("drop-target");
+  }
+
+  function handleHeaderDrop(e: DragEvent, targetId: ColumnId) {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).classList.remove("drop-target");
+    if (!dragColId || dragColId === targetId) return;
+    const from = columns.findIndex((c) => c.id === dragColId);
+    const to = columns.findIndex((c) => c.id === targetId);
+    if (from === -1 || to === -1) return;
+    const next = [...columns];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    columns = next;
+    dragColId = null;
+    saveColumns();
+  }
+
+  function handleHeaderDragEnd() {
+    dragColId = null;
+  }
+
+  // ── Resize (drag handle) — pointer capture for reliable up/down ──
+  function startResize(e: PointerEvent, id: ColumnId) {
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    resizeColId = id;
+    resizeStartX = e.clientX;
+    resizeStartWidth = columns.find((c) => c.id === id)!.width;
+  }
+
+  function onResizeMove(e: PointerEvent) {
+    if (!resizeColId) return;
+    const delta = e.clientX - resizeStartX;
+    // Convert pixel delta to a flex-weight delta (name col ≈ 500px ⇔ weight 1).
+    updateWidth(resizeColId, resizeStartWidth + delta / 500);
+  }
+
+  function onResizeEnd(e: PointerEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    resizeColId = null;
+    saveColumns();
+  }
+
+  // Double-click resets to default (flex) weight.
+  function resetWidth(e: MouseEvent, id: ColumnId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const def = COLUMN_DEFS.find((d) => d.id === id)!;
+    const col = columns.find((c) => c.id === id)!;
+    col.width = def.fixed ?? def.flex;
+    columns = columns.map((c) => (c.id === id ? { ...c } : c));
+    saveColumns();
+  }
+
+  // ── Header context menu (show/hide columns) ───────
+  let colMenu = $state<{ x: number; y: number } | null>(null);
+  let colMenuItems = $state<MenuItem[]>([]);
+
+  function openColMenu(e: MouseEvent) {
+    e.preventDefault();
+    const items: MenuItem[] = COLUMN_DEFS.map((def) => {
+      const shown = columns.find((c) => c.id === def.id)!.shown;
+      return {
+        label: (shown ? "✓ " : "   ") + def.label,
+        action: () => {
+          const col = columns.find((c) => c.id === def.id)!;
+          col.shown = !col.shown;
+          // Ensure at least one column stays visible.
+          if (!columns.some((c) => c.shown)) col.shown = true;
+          columns = columns.map((c) => (c.id === def.id ? { ...c } : c));
+          saveColumns();
+        },
+      };
+    });
+    colMenuItems = items;
+    colMenu = { x: e.clientX, y: e.clientY };
+  }
+
+  // ── Song data ─────────────────────────────────────
   let songs = $state<Song[]>([]);
-  let query = $state("");
-  let sortField = $state("title");
-  let sortAsc = $state(true);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let currentMediaId = $state<string | null>(null);
-  let showHistory = $state(false);
-  let historyTimer: ReturnType<typeof setTimeout> | undefined;
+  let sortField = $state<ColumnId>("name");
+  let sortAsc = $state(true);
+  let editingSong = $state<Song | null>(null);
+  let activePresetId = $state<string | null>(null);
 
-  onMount(() => {
-    loadLibrary();
+  onMount(async () => {
+    await searchPresets.load();
+    activePresetId = searchPresets.activeId;
+    await loadSongs();
   });
 
-  async function loadLibrary() {
+  $effect(() => {
+    currentMediaId = player.mediaId;
+  });
+
+  async function loadSongs() {
     loading = true;
     error = null;
     try {
-      songs = await invoke("list_library_songs");
+      const preset = searchPresets.active;
+      if (preset) {
+        songs = await invoke<Song[]>("search_songs", { query: preset.query });
+      } else {
+        songs = await invoke<Song[]>("list_library_songs");
+      }
     } catch (e) {
       error = String(e);
       songs = [];
@@ -51,30 +246,55 @@
     }
   }
 
-  // Keep currentMediaId in sync with the shared store
-  $effect(() => {
-    currentMediaId = player.mediaId;
-  });
+  async function selectPreset(id: string | null) {
+    activePresetId = id;
+    await searchPresets.select(id);
+    await loadSongs();
+  }
 
-  // Derive filtered + sorted results
-  let filteredSongs = $derived.by(() => {
-    let result = songs;
-    const q = query.trim().toLowerCase();
-    if (q) {
-      result = result.filter((s) => {
-        if (s.title.toLowerCase().includes(q)) return true;
-        if (s.artist.toLowerCase().includes(q)) return true;
-        if (s.album.toLowerCase().includes(q)) return true;
-        // Also search file paths
-        if (s.paths.some((p) => p.toLowerCase().includes(q))) return true;
-        return false;
-      });
+  function toggleSort(field: ColumnId) {
+    if (sortField === field) sortAsc = !sortAsc;
+    else {
+      sortField = field;
+      sortAsc = true;
     }
+  }
 
-    return [...result].sort((a, b) => {
+  function sortIndicator(field: ColumnId): string {
+    if (sortField !== field) return "";
+    return sortAsc ? " ▲" : " ▼";
+  }
+
+  function formatDuration(seconds?: number): string {
+    if (!seconds || seconds <= 0) return "";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return m + ":" + s.toString().padStart(2, "0");
+  }
+
+  // Unknown artist / album display as empty (per requirement).
+  function displayText(song: Song, field: ColumnId): string {
+    const v = field === "artist" ? song.artist : song.album;
+    return v && v !== "Unknown" ? v : "";
+  }
+
+  function platformTag(song: Song): { label: string; kind: "local" | "online" } | null {
+    if (song.paths.length > 0) return { label: "local", kind: "local" };
+    const src = song.sources[0];
+    if (src) return { label: src.platform, kind: "online" };
+    return null;
+  }
+
+  function tagText(song: Song): string {
+    return song.tags.map((t) => t.namespace + ":" + t.value).join(", ");
+  }
+
+  let sortedSongs = $derived.by(() => {
+    const list = [...songs];
+    list.sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
-        case "title":
+        case "name":
           cmp = a.title.localeCompare(b.title);
           break;
         case "artist":
@@ -83,48 +303,17 @@
         case "album":
           cmp = a.album.localeCompare(b.album);
           break;
-        case "duration":
+        case "tag":
+          cmp = tagText(a).localeCompare(tagText(b));
+          break;
+        case "time":
           cmp = (a.metadata.duration ?? 0) - (b.metadata.duration ?? 0);
           break;
-        case "tags":
-          cmp = a.tags.length - b.tags.length;
-          break;
-        default:
-          cmp = 0;
       }
       return sortAsc ? cmp : -cmp;
     });
+    return list;
   });
-
-  function toggleSort(field: string) {
-    if (sortField === field) {
-      sortAsc = !sortAsc;
-    } else {
-      sortField = field;
-      sortAsc = true;
-    }
-  }
-
-  function sortIndicator(field: string): string {
-    if (sortField !== field) return "";
-    return sortAsc ? " ▲" : " ▼";
-  }
-
-  function formatDuration(seconds?: number): string {
-    if (!seconds || seconds <= 0) return "--:--";
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  }
-
-  function displayTags(song: Song): string {
-    // Show up to 2 tags as "ns:val" + count remaining
-    const shown = song.tags.slice(0, 2);
-    const rest = song.tags.length - shown.length;
-    const parts = shown.map((t) => `${t.namespace}:${t.value}`);
-    if (rest > 0) parts.push(`+${rest}`);
-    return parts.join(", ");
-  }
 
   async function playSong(song: Song) {
     try {
@@ -132,6 +321,7 @@
       player.mediaId = song.id;
       player.title = song.title;
       player.artist = song.artist;
+      player.album = song.album;
       player.isPlaying = true;
     } catch (e) {
       console.error("play error:", e);
@@ -142,164 +332,59 @@
     return currentMediaId === song.id;
   }
 
-  // ── Tag Editing ────────────────────────────────────
-
-  let editingSong = $state<Song | null>(null);
-
   function openTagEditor(song: Song, e: MouseEvent) {
     e.stopPropagation();
     editingSong = song;
   }
 
   function closeTagEditor() {
-    songs = songs;
     editingSong = null;
   }
 
-  // ── Column Order & Visibility ───────────────────────
+  // ── "Jump to detail" external URL ─────────────────
+  function buildDetailUrl(song: Song): string | null {
+    const src = song.sources[0];
+    if (!src) return null;
+    const id = src.id;
+    switch (src.platform) {
+      case "youtube":
+        return "https://www.youtube.com/watch?v=" + id;
+      case "bilibili":
+      case "bili":
+        return "https://www.bilibili.com/video/" + id;
+      case "netease":
+      case "wy":
+        return "https://music.163.com/#/song?id=" + id;
+      case "kugou":
+      case "kg":
+        return "https://www.kugou.com/song/#hash=" + id;
+      case "kuwo":
+      case "kw":
+        return "http://www.kuwo.cn/play_detail/" + id;
+      case "tencent":
+      case "qq":
+      case "tx":
+        return "https://y.qq.com/n/yqq/song/" + id + ".html";
+      case "migu":
+      case "mg":
+        return "http://music.migu.cn/v3/music/song/" + id;
+      default:
+        return null;
+    }
+  }
 
-  const COL_KEY = "vide_columns";
-
-  function loadColumnState() {
-    try {
-      const saved = localStorage.getItem(COL_KEY);
-      if (saved) {
-        const data = JSON.parse(saved);
-        return {
-          order: data.order as string[],
-          visible: data.visible as Record<string, boolean>,
-        };
+  async function jumpToDetail(song: Song) {
+    const url = buildDetailUrl(song);
+    if (url) {
+      try {
+        await openUrl(url);
+      } catch (e) {
+        console.error("open url error:", e);
       }
-    } catch {
-      /* ignore */
-    }
-    return {
-      order: ALL_COLUMNS.map((c) => c.id),
-      visible: Object.fromEntries(ALL_COLUMNS.map((c) => [c.id, true])),
-    };
-  }
-
-  const initialState = loadColumnState();
-  let columnOrder = $state<string[]>(initialState.order);
-  let columnVisible = $state<Record<string, boolean>>(initialState.visible);
-
-  let visibleColumns = $derived(
-    columnOrder
-      .filter((id) => columnVisible[id])
-      .map((id) => ALL_COLUMNS.find((c) => c.id === id)!),
-  );
-
-  function saveColumnState() {
-    try {
-      localStorage.setItem(
-        COL_KEY,
-        JSON.stringify({ order: columnOrder, visible: columnVisible }),
-      );
-    } catch {
-      /* ignore */
     }
   }
 
-  // ── Column Drag & Drop ────────────────────────────────
-
-  let dragColId = $state<string | null>(null);
-
-  function handleDragStart(id: string) {
-    dragColId = id;
-  }
-
-  function handleDragOver(e: DragEvent, id: string) {
-    e.preventDefault();
-    if (dragColId && dragColId !== id) {
-      (e.currentTarget as HTMLElement).classList.add("drop-target");
-    }
-  }
-
-  function handleDragLeave(e: DragEvent) {
-    (e.currentTarget as HTMLElement).classList.remove("drop-target");
-  }
-
-  function handleDrop(e: DragEvent, targetId: string) {
-    e.preventDefault();
-    (e.currentTarget as HTMLElement).classList.remove("drop-target");
-    if (!dragColId || dragColId === targetId) return;
-    const fromIdx = columnOrder.indexOf(dragColId);
-    const toIdx = columnOrder.indexOf(targetId);
-    if (fromIdx === -1 || toIdx === -1) return;
-    const newOrder = [...columnOrder];
-    newOrder.splice(fromIdx, 1);
-    newOrder.splice(toIdx, 0, dragColId);
-    columnOrder = newOrder;
-    dragColId = null;
-    saveColumnState();
-  }
-
-  function handleDragEnd() {
-    dragColId = null;
-  }
-
-  // ── Column Header Context Menu ────────────────────────
-
-  let colMenu = $state<{ x: number; y: number } | null>(null);
-  let colMenuItems = $state<MenuItem[]>([]);
-
-  function openColMenu(e: MouseEvent, col: ColumnDef) {
-    e.preventDefault();
-    const items: MenuItem[] = ALL_COLUMNS.map((c) => ({
-      label: c.label,
-      action: () => {
-        columnVisible[c.id] = !columnVisible[c.id];
-        // Ensure at least one column remains visible
-        const remaining = Object.values(columnVisible).filter(Boolean).length;
-        if (remaining === 0) columnVisible[c.id] = true;
-        columnVisible = { ...columnVisible };
-        saveColumnState();
-      },
-    }));
-    items.push({ label: "", action: () => {}, divider: true });
-    items.push({
-      label: "重置列布局",
-      action: () => {
-        columnOrder = ALL_COLUMNS.map((c) => c.id);
-        columnVisible = Object.fromEntries(
-          ALL_COLUMNS.map((c) => [c.id, true]),
-        );
-        saveColumnState();
-      },
-    });
-
-    colMenuItems = items.map((it) => ({
-      ...it,
-      label: columnVisible[it.label] ? `✓ ${it.label}` : `  ${it.label}`,
-    }));
-    // Rebuild with checked indicators
-    colMenuItems = ALL_COLUMNS.map((c) => ({
-      label: columnVisible[c.id] ? `✓ ${c.label}` : `  ${c.label}`,
-      action: () => {
-        columnVisible[c.id] = !columnVisible[c.id];
-        const remaining = Object.values(columnVisible).filter(Boolean).length;
-        if (remaining === 0) columnVisible[c.id] = true;
-        columnVisible = { ...columnVisible };
-        saveColumnState();
-      },
-    }));
-    colMenuItems.push({ label: "", action: () => {}, divider: true });
-    colMenuItems.push({
-      label: "重置列布局",
-      action: () => {
-        columnOrder = ALL_COLUMNS.map((c) => c.id);
-        columnVisible = Object.fromEntries(
-          ALL_COLUMNS.map((c) => [c.id, true]),
-        );
-        saveColumnState();
-      },
-    });
-
-    colMenu = { x: e.clientX, y: e.clientY };
-  }
-
-  // ── Song Right-Click Context Menu ─────────────────────
-
+  // ── Context menu ──────────────────────────────────
   let ctxSong = $state<Song | null>(null);
   let ctxPos = $state<{ x: number; y: number } | null>(null);
 
@@ -317,206 +402,136 @@
 
   let contextMenuItems = $derived.by(() => {
     if (!ctxSong) return [];
+    const detailUrl = buildDetailUrl(ctxSong);
     return [
-      {
-        label: "播放",
-        icon: Play,
-        action: () => playSong(ctxSong!),
-      },
-      {
-        label: "编辑标签",
-        icon: Tag,
-        action: () => {
-          editingSong = ctxSong;
-        },
-      },
+      { label: "播放", icon: Play, action: () => playSong(ctxSong!) },
+      { label: "编辑标签", icon: ListPlus, action: () => (editingSong = ctxSong) },
       { label: "", action: () => {}, icon: undefined, divider: true },
-      {
-        label: "下载",
-        icon: Download,
-        action: () => {},
-        disabled: true,
-      },
-      {
-        label: "添加到播放列表",
-        icon: ListPlus,
-        action: () => {},
-        disabled: true,
-      },
+      ...(detailUrl
+        ? [{ label: "跳转详情", icon: ExternalLink, action: () => jumpToDetail(ctxSong!) } as MenuItem]
+        : []),
+      { label: "下载", icon: Download, action: () => {}, disabled: true },
     ] as MenuItem[];
   });
 
-  // ── Search History ──────────────────────────────────
-
-  function handleSearchInput(e: Event) {
-    const target = e.target as HTMLInputElement;
-    query = target.value;
-    if (target.value) {
-      showHistory = false;
-    }
+  function labelOf(id: ColumnId): string {
+    return COLUMN_DEFS.find((d) => d.id === id)!.label;
   }
 
-  function handleSearchFocus() {
-    clearTimeout(historyTimer);
-    if (!query.trim()) {
-      showHistory = searchStore.history.length > 0;
-    }
+  function isFixed(id: ColumnId): boolean {
+    return COLUMN_DEFS.find((d) => d.id === id)!.fixed != null;
   }
 
-  function handleSearchBlur() {
-    historyTimer = setTimeout(() => {
-      showHistory = false;
-    }, 200);
-  }
-
-  function handleSearchKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      if (query.trim()) {
-        searchStore.add(query);
-        showHistory = false;
-      }
-    } else if (e.key === "Escape") {
-      showHistory = false;
-    }
-  }
-
-  function selectHistory(q: string) {
-    query = q;
-    showHistory = false;
+  function colStyle(id: ColumnId): string {
+    const def = COLUMN_DEFS.find((d) => d.id === id)!;
+    const w = columns.find((c) => c.id === id)!.width;
+    if (def.fixed != null) return "width: " + def.fixed + "px; flex: 0 0 " + def.fixed + "px;";
+    return "flex: " + w + " 1 0; min-width: 0;";
   }
 </script>
 
-<div class="library-view">
-  <!-- Local search bar -->
-  <div class="search-bar">
-    <div class="search-input-wrapper">
-      <span class="search-icon">
-        <Search size={14} />
-      </span>
-      <div class="search-field">
-        <input
-          type="text"
-          class="local-search"
-          placeholder="搜索我的音乐... (留空 = 我的库)"
-          value={query}
-          oninput={handleSearchInput}
-          onfocus={handleSearchFocus}
-          onblur={handleSearchBlur}
-          onkeydown={handleSearchKeydown}
-        />
-        {#if showHistory}
-          <SearchHistory
-            onselect={selectHistory}
-            onclose={() => (showHistory = false)}
-          />
-        {/if}
-      </div>
-    </div>
-    {#if filteredSongs.length > 0}
-      <span class="song-count">{filteredSongs.length}</span>
-    {/if}
-  </div>
+<div class="library">
+  <PresetPanel
+    activeId={activePresetId}
+    onSelect={selectPreset}
+    onPlay={playSong}
+    songs={songs}
+  />
 
-  <!-- Song table header -->
-  <div class="table-header" role="row">
-    <div class="col col-index">#</div>
-    {#each visibleColumns as col}
-      <button
-        class="col"
-        class:dragging={dragColId === col.id}
-        class:col-duration={col.id === 'duration'}
-        style="flex: {col.width}"
-        draggable="true"
-        onclick={() => toggleSort(col.id)}
-        oncontextmenu={(e) => openColMenu(e, col)}
-        ondragstart={() => handleDragStart(col.id)}
-        ondragover={(e) => handleDragOver(e, col.id)}
-        ondragleave={handleDragLeave}
-        ondrop={(e) => handleDrop(e, col.id)}
-        ondragend={handleDragEnd}
-        class:col-active={sortField === col.id}
-      >
-        {col.label}{sortIndicator(col.id)}
-      </button>
-    {/each}
-  </div>
-
-  <!-- Song rows or states -->
-  {#if loading}
-    <div class="empty-state">
-      <p class="empty-title">加载中...</p>
-    </div>
-  {:else if error}
-    <div class="empty-state">
-      <p class="empty-title">加载失败</p>
-      <p class="empty-desc">{error}</p>
-      <button class="retry-btn" onclick={loadLibrary}>重试</button>
-    </div>
-  {:else if filteredSongs.length === 0}
-    <div class="empty-state">
-      <div class="empty-icon">
-        {#if query.trim()}
-          <Search size={32} />
-        {:else}
-          <Tag size={32} />
-        {/if}
-      </div>
-      <p class="empty-title">
-        {query.trim() ? "没有匹配的歌曲" : "还没有歌曲"}
-      </p>
-      <p class="empty-desc">
-        {query.trim() ? "尝试其他关键词" : "添加库目录或导入播放列表开始使用"}
-      </p>
-    </div>
-  {:else}
-    <div class="song-list">
-      {#each filteredSongs as song, i}
-        <button
-          class="song-row"
-          class:playing={isPlaying(song)}
-          onclick={() => playSong(song)}
-          ondblclick={() => playSong(song)}
-          oncontextmenu={(e) => openContextMenu(song, e)}
+  <div class="library-main">
+    <!-- Table header -->
+    <div class="table-header">
+      {#each visibleColumns as col}
+        <div
+          class="th"
+          class:dragging={dragColId === col.id}
+          style={colStyle(col.id)}
+          draggable="true"
+          ondragstart={(e) => handleHeaderDragStart(e, col.id)}
+          ondragover={(e) => handleHeaderDragOver(e, col.id)}
+          ondragleave={handleHeaderDragLeave}
+          ondrop={(e) => handleHeaderDrop(e, col.id)}
+          ondragend={handleHeaderDragEnd}
+          oncontextmenu={openColMenu}
         >
-          <div class="col col-index">
-            {#if isPlaying(song)}
-              <span class="playing-indicator">▶</span>
-            {:else}
-              {i + 1}
-            {/if}
-          </div>
-          {#each visibleColumns as col}
-            <div class="col" class:col-duration={col.id === 'duration'} style="flex: {col.width}">
-              {#if col.id === "title"}
-                <span class="truncate song-title-cell">{song.title}</span>
-              {:else if col.id === "artist"}
-                <span class="truncate">{song.artist}</span>
-              {:else if col.id === "album"}
-                <span class="truncate">{song.album}</span>
-              {:else if col.id === "tags"}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="tags-btn"
-                  role="button"
-                  tabindex="0"
-                  onclick={(e) => openTagEditor(song, e)}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ")
-                      openTagEditor(song, e as any);
-                  }}
-                >
-                  <span class="truncate tags-cell">{displayTags(song)}</span>
-                </div>
-              {:else if col.id === "duration"}
-                <span>{formatDuration(song.metadata.duration)}</span>
-              {/if}
-            </div>
-          {/each}
-        </button>
+          <button class="th-label" onclick={() => toggleSort(col.id)} title="点击排序，拖拽调序">
+            {labelOf(col.id)}{sortIndicator(col.id)}
+          </button>
+          {#if !isFixed(col.id)}
+            <div
+              class="resize-handle"
+              title="拖动调宽，双击复位"
+              onpointerdown={(e) => startResize(e, col.id)}
+              onpointermove={onResizeMove}
+              onpointerup={onResizeEnd}
+              onpointercancel={onResizeEnd}
+              ondblclick={(e) => resetWidth(e, col.id)}
+            ></div>
+          {/if}
+        </div>
       {/each}
     </div>
-  {/if}
+
+    <!-- List / states -->
+    {#if loading}
+      <div class="empty-state"><p>加载中...</p></div>
+    {:else if error}
+      <div class="empty-state">
+        <p class="empty-title">加载失败</p>
+        <p class="empty-desc">{error}</p>
+      </div>
+    {:else if sortedSongs.length === 0}
+      <div class="empty-state">
+        <Search size={32} class="empty-icon" />
+        <p class="empty-title">没有歌曲</p>
+        <p class="empty-desc">添加库目录或导入播放列表开始使用</p>
+      </div>
+    {:else}
+      <div class="song-list">
+        {#each sortedSongs as song, i}
+          <div
+            class="song-row"
+            class:playing={isPlaying(song)}
+            onclick={() => playSong(song)}
+            oncontextmenu={(e) => openContextMenu(song, e)}
+          >
+            {#each visibleColumns as col}
+              <div class="td" style={colStyle(col.id)}>
+                {#if col.id === "num"}
+                  {#if isPlaying(song)}
+                    <span class="playing-indicator">&#9654;</span>
+                  {:else}
+                    <span class="cell-num">{i + 1}</span>
+                  {/if}
+                {:else if col.id === "name"}
+                  <div class="name-cell">
+                    <span class="name-text">{song.title}</span>
+                    {#if platformTag(song)}
+                      <span class="tag-badge" class:local={platformTag(song)!.kind == "local"}>
+                        {platformTag(song)!.label}
+                      </span>
+                    {/if}
+                  </div>
+                {:else if col.id === "tag"}
+                  <div class="tag-cell">
+                    {#if song.tags.length > 0}
+                      <span class="tag-cell-text">{tagText(song)}</span>
+                    {/if}
+                  </div>
+                {:else if col.id === "artist"}
+                  <span class="cell-text">{displayText(song, "artist")}</span>
+                {:else if col.id === "album"}
+                  <span class="cell-text">{displayText(song, "album")}</span>
+                {:else if col.id === "time"}
+                  <span class="cell-time">{formatDuration(song.metadata.duration)}</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
 </div>
 
 {#if editingSong}
@@ -524,269 +539,140 @@
 {/if}
 
 {#if ctxPos && contextMenuItems.length > 0}
-  <ContextMenu
-    items={contextMenuItems}
-    x={ctxPos.x}
-    y={ctxPos.y}
-    onclose={closeContextMenu}
-  />
+  <ContextMenu items={contextMenuItems} x={ctxPos.x} y={ctxPos.y} onclose={closeContextMenu} />
 {/if}
 
 {#if colMenu}
-  <ContextMenu
-    items={colMenuItems}
-    x={colMenu.x}
-    y={colMenu.y}
-    onclose={() => (colMenu = null)}
-  />
+  <ContextMenu items={colMenuItems} x={colMenu.x} y={colMenu.y} onclose={() => (colMenu = null)} />
 {/if}
 
 <style>
-  .library-view {
+  .library {
+    display: flex;
+    height: 100%;
+  }
+
+  .library-main {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    height: 100%;
-    user-select: none;
+    min-width: 0;
   }
 
-  /* ── Search Bar ──────────────────────────────────── */
-  .search-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border-subtle);
-    user-select: none;
-  }
-
-  .search-input-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: 1;
-    height: 30px;
-    padding: 0 10px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    transition: border-color 0.15s;
-  }
-
-  .search-input-wrapper:focus-within {
-    border-color: var(--accent-primary);
-  }
-
-  .search-field {
-    position: relative;
-    flex: 1;
-    height: 100%;
-  }
-
-  .search-icon {
-    color: var(--text-tertiary);
-    flex-shrink: 0;
-    display: flex;
-  }
-
-  .local-search {
-    flex: 1;
-    height: 100%;
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    font-size: 13px;
-    outline: none;
-    user-select: text;
-  }
-
-  .local-search::placeholder {
-    color: var(--text-tertiary);
-  }
-
-  .song-count {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    background: var(--bg-elevated);
-    padding: 2px 8px;
-    border-radius: 10px;
-    white-space: nowrap;
-  }
-
-  /* ── Table Header ────────────────────────────────── */
+  /* Header */
   .table-header {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     height: 32px;
-    padding: 0 12px 0 8px;
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border-subtle);
+    min-width: 0;
+    overflow: hidden;
+    background: var(--color-base-200);
+    border-bottom: 1px solid var(--color-base-300);
     font-size: 11px;
-    font-weight: 500;
-    color: var(--text-tertiary);
+    font-weight: 600;
+    color: var(--color-base-content) / 0.7;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     user-select: none;
   }
 
-  .col {
+  .th {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 4px;
-    cursor: pointer;
-    user-select: none;
+    padding: 0 8px;
     min-width: 0;
+    overflow: hidden;
+    border-right: 1px solid transparent;
+  }
+
+  .th.dragging { opacity: 0.5; }
+
+  .th.drop-target::after {
+    content: ""; position: absolute; right: -1px; top: 4px; bottom: 4px;
+    width: 2px; background: var(--color-primary); border-radius: 1px;
+  }
+
+  .th-label {
+    flex: 1;
+    text-align: left;
     background: none;
     border: none;
     color: inherit;
     font: inherit;
-    text-transform: inherit;
+    font-weight: inherit;
     letter-spacing: inherit;
-    text-align: left;
+    text-transform: inherit;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     padding: 0;
   }
 
-  .col:hover {
-    color: var(--text-secondary);
-  }
+  .th-label:hover { color: var(--color-base-content); }
 
-  .col-active {
-    color: var(--accent-primary) !important;
-  }
-
-  .col.dragging {
-    opacity: 0.5;
-  }
-
-  .drop-target {
-    position: relative;
-  }
-
-  .drop-target::after {
-    content: "";
+  .resize-handle {
     position: absolute;
-    right: -2px;
-    top: 4px;
-    bottom: 4px;
-    width: 2px;
-    background: var(--accent-primary);
-    border-radius: 1px;
+    right: -3px;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: col-resize;
+    z-index: 2;
   }
-
-  .col-index {
-    width: 36px;
-    flex: none;
-    justify-content: center;
+  .resize-handle::after {
+    content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px;
+    width: 1px; background: transparent; transition: background 0.12s;
   }
+  .resize-handle:hover::after { background: var(--color-primary) / 0.6; }
 
-  .col-duration {
-    text-align: right !important;
-    justify-content: flex-end;
-    padding-right: 8px;
-  }
-
-  /* ── Song List ───────────────────────────────────── */
-  .song-list {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    user-select: none;
-  }
-
+  /* Body */
+  .song-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
   .song-row {
     display: flex;
     align-items: center;
-    width: 100%;
     height: 36px;
-    padding: 0 12px 0 8px;
-    background: none;
-    border: none;
-    color: var(--text-primary);
+    min-width: 0;
+    color: var(--color-base-content);
     font-size: 13px;
     cursor: pointer;
     transition: background 0.1s;
-    user-select: none;
   }
+  .song-row:hover { background: var(--color-base-300) / 0.7; }
+  .song-row.playing { background: var(--color-primary) / 0.12; }
+  .song-row.playing .name-text { color: var(--color-primary); }
 
-  .song-row:hover {
-    background: var(--bg-hover);
-  }
-
-  .song-row.playing {
-    background: var(--accent-surface);
-  }
-
-  .song-row.playing .song-title-cell {
-    color: var(--accent-primary);
-  }
-
-  .playing-indicator {
-    color: var(--accent-primary);
-    font-size: 10px;
-  }
-
-  .song-title-cell {
-    font-weight: 500;
-  }
-
-  .tags-cell {
-    font-size: 11px;
-    color: var(--text-secondary);
-  }
-
-  .tags-btn {
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background 0.1s;
-    padding: 2px 4px;
-    margin: -2px -4px;
-  }
-
-  .tags-btn:hover {
-    background: var(--accent-surface);
-  }
-
-  /* ── Empty State ─────────────────────────────────── */
-  .empty-state {
-    flex: 1;
+  .td {
     display: flex;
-    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 40px;
-    color: var(--text-tertiary);
+    padding: 0 8px;
+    min-width: 0;
+    user-select: text; /* allow copying */
   }
 
-  .empty-icon {
-    opacity: 0.4;
-    margin-bottom: 4px;
-    display: flex;
-  }
+  .cell-num { color: var(--color-base-content) / 0.5; font-size: 12px; }
+  .playing-indicator { color: var(--color-primary); font-size: 10px; }
 
-  .empty-title {
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--text-secondary);
+  .name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+  .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag-badge {
+    flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px;
+    background: var(--color-primary) / 0.15; color: var(--color-primary);
   }
+  .tag-badge.local { background: var(--color-success) / 0.15; color: var(--color-success); }
 
-  .empty-desc {
-    font-size: 12px;
-    text-align: center;
-    max-width: 240px;
-    line-height: 1.5;
-  }
+  .tag-cell { width: 100%; min-width: 0; }
+  .tag-cell-text { font-size: 11px; color: var(--color-base-content) / 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .retry-btn {
-    margin-top: 8px;
-    padding: 6px 14px;
-    border-radius: 6px;
-    background: var(--accent-primary);
-    color: white;
-    font-size: 12px;
-    border: none;
-  }
+  .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cell-time { color: var(--color-base-content) / 0.6; font-size: 12px; }
 
-  .retry-btn:hover {
-    background: var(--accent-hover);
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; padding: 40px; color: var(--color-base-content) / 0.5;
   }
+  .empty-icon { opacity: 0.4; }
+  .empty-title { font-size: 15px; font-weight: 500; color: var(--color-base-content) / 0.7; }
+  .empty-desc { font-size: 12px; text-align: center; max-width: 240px; line-height: 1.5; }
 </style>

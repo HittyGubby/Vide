@@ -89,3 +89,20 @@ export interface Playlist {
   entries: PlaylistEntry[];
   source: { type: string; file_path?: string };
 }
+
+/* ── Search Preset ───────────────────── */
+export interface SearchPreset {
+  id: string;
+  name: string;
+  query: string;
+}
+
+/* ── Online Search Result ───────────────────── */
+export interface SearchResultItem {
+  platform: string;
+  id: string;
+  title: string;
+  artist?: string;
+  album?: string;
+  duration?: number;
+}

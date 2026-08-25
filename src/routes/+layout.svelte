@@ -3,7 +3,6 @@
   import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
   import TitleBar from "$lib/components/layout/TitleBar.svelte";
   import Sidebar from "$lib/components/layout/Sidebar.svelte";
-  import ProgressBar from "$lib/components/layout/ProgressBar.svelte";
   import PlayerBar from "$lib/components/layout/PlayerBar.svelte";
   import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
   import { ui } from "$lib/stores/ui.svelte";
@@ -12,7 +11,6 @@
 
   const WINDOW_STATE_KEY = "vide_window_state";
 
-  // Restore window size on mount; save on resize
   $effect(() => {
     const appWindow = getCurrentWindow();
     let cancelled = false;
@@ -40,19 +38,12 @@
         if (cancelled) return;
         const maximized = await appWindow.isMaximized();
         if (maximized) {
-          localStorage.setItem(
-            WINDOW_STATE_KEY,
-            JSON.stringify({ maximized: true }),
-          );
+          localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify({ maximized: true }));
         } else {
           const size = await appWindow.outerSize();
           localStorage.setItem(
             WINDOW_STATE_KEY,
-            JSON.stringify({
-              width: size.width,
-              height: size.height,
-              maximized: false,
-            }),
+            JSON.stringify({ width: size.width, height: size.height, maximized: false }),
           );
         }
       } catch {
@@ -68,17 +59,17 @@
 </script>
 
 <div class="app-shell">
-  <TitleBar />
+  <Sidebar />
 
-  <div class="main-area">
-    <Sidebar />
+  <div class="right">
+    <TitleBar />
     <main class="content">
       {@render children()}
     </main>
+    {#if !ui.showPlayerDetail}
+      <PlayerBar />
+    {/if}
   </div>
-
-  <ProgressBar />
-  <PlayerBar />
 </div>
 
 {#if ui.showPlayerDetail}
@@ -87,25 +78,25 @@
 
 <style>
   .app-shell {
-    display: grid;
-    grid-template-rows: var(--titlebar-height) 1fr auto var(--playerbar-height);
+    display: flex;
     height: 100vh;
-    background: var(--bg-base);
-    color: var(--text-primary);
-    user-select: none;
+    background: var(--color-base-100);
+    color: var(--color-base-content);
   }
 
-  .main-area {
-    display: grid;
-    grid-template-columns: var(--sidebar-width) 1fr;
-    overflow: hidden;
-    min-height: 0;
+  .right {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .content {
+    flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    background: var(--bg-base);
-    user-select: none;
+    background: var(--color-base-100);
+    min-width: 0;
+    min-height: 0;
   }
 </style>
