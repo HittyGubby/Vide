@@ -1,15 +1,50 @@
 <script lang="ts">
   import "../app.css";
+  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
   import TitleBar from "$lib/components/layout/TitleBar.svelte";
   import Sidebar from "$lib/components/layout/Sidebar.svelte";
   import PlayerBar from "$lib/components/layout/PlayerBar.svelte";
   import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
   import { ui } from "$lib/stores/ui.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import { player } from "$lib/stores/player.svelte";
 
   let { children } = $props();
 
   const WINDOW_STATE_KEY = "vide_window_state";
+
+  // Load settings once (for auto-play resume).
+  let settingsLoaded = false;
+  $effect(() => {
+    if (settingsLoaded) return;
+    settingsStore.load().then(async () => {
+      settingsLoaded = true;
+      // "启动时自动播放音乐": resume the last-played song at its saved position.
+      if (settingsStore.settings.auto_play_on_start) {
+        const last = await player.getLastPlayed();
+        if (last && last.songId) {
+          try {
+            await invoke("play_song", { id: last.songId });
+            if (last.position > 0) {
+              await invoke("seek", { positionSecs: last.position });
+            }
+          } catch (e) {
+            console.error("auto-play resume error:", e);
+          }
+        }
+      }
+    });
+  });
+
+  // Reactively apply font + window scale so setting changes take effect
+  // immediately (no restart needed).
+  $effect(() => {
+    const font = settingsStore.settings.font_family;
+    if (font) document.body.style.fontFamily = font;
+    const scale = (settingsStore.settings.window_scale || 100) / 100;
+    document.body.style.zoom = String(scale);
+  });
 
   $effect(() => {
     const appWindow = getCurrentWindow();

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { page } from "$app/stores";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { Search, Play, Download, ListPlus, ExternalLink, Tag as TagIcon } from "lucide-svelte";
+  import { Search, Play, Download, ListPlus, ExternalLink, Trash2, Tag as TagIcon } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
   import { searchPresets } from "$lib/stores/searchPresets.svelte";
   import PresetPanel from "$lib/components/library/PresetPanel.svelte";
@@ -217,11 +218,64 @@
   let sortAsc = $state(true);
   let editingSong = $state<Song | null>(null);
   let activePresetId = $state<string | null>(null);
+  let listEl = $state<HTMLDivElement | null>(null);
+
+  // Remember the scroll position between visits (localStorage, UI-only).
+  const SCROLL_KEY = "vide_list_scroll";
+  function saveScroll() {
+    if (!listEl) return;
+    try {
+      localStorage.setItem(SCROLL_KEY, String(listEl.scrollTop));
+    } catch { /* ignore */ }
+  }
+  function restoreScroll() {
+    if (!listEl) return;
+    try {
+      const s = localStorage.getItem(SCROLL_KEY);
+      if (s != null) listEl.scrollTop = parseInt(s, 10) || 0;
+    } catch { /* ignore */ }
+  }
+
+  // Locate the given song id in the list: highlight + scroll it into view.
+  const ROW_H = 36; // song-row height in px
+  let locatorTarget = $state<string | null>(null);
+  async function scrollToSong(id: string) {
+    locatorTarget = id;
+    // Find the index in the current sorted list and center the row.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await tick();
+      const idx = sortedSongs.findIndex((s) => s.id === id);
+      if (idx >= 0 && listEl) {
+        const target = idx * ROW_H - (listEl.clientHeight / 2) + ROW_H / 2;
+        listEl.scrollTop = Math.max(0, target);
+        saveScroll();
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    setTimeout(() => (locatorTarget = null), 2500);
+  }
 
   onMount(async () => {
     await searchPresets.load();
-    activePresetId = searchPresets.activeId;
+    // If a locate target was requested (right-click player bar), force "全部歌曲".
+    const locateId = $page.url.searchParams.get("locate");
+    const presetParam = $page.url.searchParams.get("preset");
+    if (presetParam === "all") {
+      activePresetId = null;
+      await searchPresets.select(null);
+    } else {
+      activePresetId = searchPresets.activeId;
+    }
     await loadSongs();
+
+    // After songs load: either locate a specific song, or restore scroll.
+    if (locateId) {
+      await scrollToSong(locateId);
+    } else {
+      await tick();
+      restoreScroll();
+    }
   });
 
   $effect(() => {
@@ -384,6 +438,18 @@
     }
   }
 
+  // Clear (delete) the cached media for a song, forcing a fresh fetch.
+  let clearCacheNote = $state<string | null>(null);
+  async function clearCache(song: Song) {
+    try {
+      const n = await invoke<number>("clear_song_cache", { id: song.id });
+      clearCacheNote = "已清空缓存" + (n > 0 ? "（" + n + " 条）" : "（无缓存）");
+      setTimeout(() => (clearCacheNote = null), 3000);
+    } catch (e) {
+      console.error("clear cache error:", e);
+    }
+  }
+
   // ── Context menu ──────────────────────────────────
   let ctxSong = $state<Song | null>(null);
   let ctxPos = $state<{ x: number; y: number } | null>(null);
@@ -410,6 +476,7 @@
       ...(detailUrl
         ? [{ label: "跳转详情", icon: ExternalLink, action: () => jumpToDetail(ctxSong!) } as MenuItem]
         : []),
+      { label: "清空该曲缓存", icon: Trash2, action: () => clearCache(ctxSong!) },
       { label: "下载", icon: Download, action: () => {}, disabled: true },
     ] as MenuItem[];
   });
@@ -487,11 +554,13 @@
         <p class="empty-desc">添加库目录或导入播放列表开始使用</p>
       </div>
     {:else}
-      <div class="song-list">
+      <div class="song-list" bind:this={listEl} onscroll={saveScroll}>
         {#each sortedSongs as song, i}
           <div
             class="song-row"
             class:playing={isPlaying(song)}
+            class:located={locatorTarget === song.id}
+            data-song-id={song.id}
             onclick={() => playSong(song)}
             oncontextmenu={(e) => openContextMenu(song, e)}
           >
@@ -533,6 +602,10 @@
     {/if}
   </div>
 </div>
+
+{#if clearCacheNote}
+  <div class="toast-note">{clearCacheNote}</div>
+{/if}
 
 {#if editingSong}
   <TagEditor song={editingSong} onclose={closeTagEditor} />
@@ -642,6 +715,8 @@
   .song-row:hover { background: var(--color-base-300) / 0.7; }
   .song-row.playing { background: var(--color-primary) / 0.12; }
   .song-row.playing .name-text { color: var(--color-primary); }
+  .song-row.located { background: var(--color-primary) / 0.2; }
+  .song-row.located .name-text { color: var(--color-primary); font-weight: 600; }
 
   .td {
     display: flex;
@@ -675,4 +750,18 @@
   .empty-icon { opacity: 0.4; }
   .empty-title { font-size: 15px; font-weight: 500; color: var(--color-base-content) / 0.7; }
   .empty-desc { font-size: 12px; text-align: center; max-width: 240px; line-height: 1.5; }
+
+  .toast-note {
+    position: fixed;
+    bottom: 72px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 400;
+    background: var(--color-base-300);
+    color: var(--color-primary);
+    border: 1px solid var(--panel-border-strong);
+    border-radius: 8px; padding: 8px 16px;
+    font-size: 12px;
+    box-shadow: var(--shadow-md);
+  }
 </style>

@@ -68,8 +68,13 @@
 | **标题栏全局搜索** | ✅ | 回车 → 跳 `/search`，下拉显示本地自动补全 |
 | **进度条 Seek** | ✅ | 播放详情内可点击/键盘 seek |
 | **标签编辑悬浮窗** | ✅ | 按命名空间分组 + 增删 + 自动补全 |
-| **右键菜单** | ✅ | 歌曲行右键：播放/编辑标签/下载(占位) |
-| **设置页** | ✅ | 库管理、数据导出、关于（功能不变，套用新主题） |
+| **右键菜单** | ✅ | 歌曲行右键：播放/编辑标签/跳转详情/清空该曲缓存/下载(占位) |
+| **播放栏右键** | ✅ | 右击播放栏→在列表中定位当前歌曲 / 编辑当前歌曲标签 |
+| **记住播放进度** | ✅ | 播放中轮询保存 last_played(song_id+position)；启动时可自动播放并seek恢复 |
+| **记住列表滚动位置** | ✅ | 列表页 scrollTop 存 localStorage，重启/返回恢复；`?locate=` 定位并滚动到指定歌曲 |
+| **歌词增强** | ✅ | 当前行放大高亮；拖拽歌词改进度；右击歌词调字号(存设置) |
+| **设置页** | ✅ | 对齐 settings.png：通用/外观(窗口缩放·字体 热调整)/歌词/库管理(包含+排除文件夹完整CRUD，扫描与添加并排)/数据(4按钮并排：导出导入歌曲·设置)；无侧边栏 |
+| **设置持久化** | ✅ | `AppSettings` 存 SQLite settings 表（get/set_app_settings），纯UI项(列宽等)仍存 localStorage |
 | **JSON 导出** | ✅ | 全部歌曲导出为 JSON |
 
 > 说明：原 `/playlists` 路由已并入列表页的「搜索预设」侧栏（查询语言构建动态视图）。
@@ -86,15 +91,17 @@
 
 ---
 
-## 3. Tauri 命令清单（共 29 个）
+## 3. Tauri 命令清单（共 40 个）
 
 ```rust
-// Library (4)
+// Library (6)
 list_songs()              → Vec<Song>            // 全量
 list_library_songs()      → Vec<Song>            // 我的库（有路径/标签）
 get_song(id)              → Option<Song>
 search_songs(query)       → Vec<Song>
 scan_library()            → ScanResult
+import_songs(songs)       → u64                  // 批量upsert歌曲
+clear_song_cache(id)      → u64                  // 清空歌曲缓存
 
 // Playback (4)
 get_player_status()       → PlaybackStatus
@@ -117,6 +124,15 @@ save_search_preset(name, query) → SearchPreset
 delete_search_preset(id)        → ()
 get_last_search_preset()        → Option<String>
 set_last_search_preset(id)      → ()
+
+// App Settings (2)
+get_app_settings()             → AppSettings
+set_app_settings(settings)     → ()
+
+// Playback memory (3)
+get_last_played()             → Option<(song_id, position)>
+save_last_played(song_id, pos) → ()
+clear_song_cache(id)           → u64
 
 // Tags (4)
 get_meta_tags()           → Vec<MetaTag>

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { player } from "$lib/stores/player.svelte";
   import { ui } from "$lib/stores/ui.svelte";
   import {
@@ -72,6 +74,14 @@
     if (player.mediaId) ui.showPlayerDetail = true;
   }
 
+  // ── Right-click the cover/title/lyrics area → locate the current song. ──
+  function locateCurrentSong(e: MouseEvent) {
+    e.preventDefault();
+    if (!player.mediaId) return;
+    ui.showPlayerDetail = false;
+    goto("/?locate=" + encodeURIComponent(player.mediaId) + "&preset=all");
+  }
+
   // ── Lyrics line (bottom-left) ────────────────────
   let lyricsLine = $state<string | null>(null);
   let lyrics = $state<{ t: number; text: string }[]>([]);
@@ -130,7 +140,7 @@
 </script>
 
 <footer class="playerbar">
-  <div class="player-left">
+  <div class="player-left" oncontextmenu={locateCurrentSong}>
     <button class="album-art" onclick={openDetail} title="播放详情" aria-label="播放详情">
       {#if player.cover}
         <img src={player.cover} alt="" class="cover" />

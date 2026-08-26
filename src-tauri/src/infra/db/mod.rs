@@ -666,6 +666,61 @@ impl Database {
     pub async fn set_last_search_preset(&self, id: &str) -> Result<(), DbErr> {
         self.update_setting("last_search_preset", &serde_json::json!(id)).await
     }
+
+    // ── App Settings ──────────────────────────────────────────────
+
+    const SETTINGS_KEY: &'static str = "video_settings";
+
+    /// Load the full app settings, merging stored value over defaults.
+    pub async fn load_app_settings(&self) -> Result<crate::models::AppSettings, DbErr> {
+        let defaults = crate::models::AppSettings::default();
+        match self.get_setting(Self::SETTINGS_KEY).await? {
+            Some(val) => {
+                let mut s: crate::models::AppSettings = serde_json::from_value(val).unwrap_or_default();
+                // Backfill any fields missing from older saved data.
+                if s.font_family.is_empty() {
+                    s.font_family = defaults.font_family;
+                }
+                if s.lyrics_align.is_empty() {
+                    s.lyrics_align = defaults.lyrics_align;
+                }
+                Ok(s)
+            }
+            None => Ok(defaults),
+        }
+    }
+
+    /// Persist the full app settings object.
+    pub async fn save_app_settings(&self, settings: &crate::models::AppSettings) -> Result<(), DbErr> {
+        self.update_setting(Self::SETTINGS_KEY, &serde_json::to_value(settings).unwrap())
+            .await
+    }
+
+    // ── Playback memory (remember progress / last played song) ──────
+
+    const LAST_PLAYED_KEY: &'static str = "last_played";
+
+    /// Save a snapshot of the last-played song and its position (seconds).
+    pub async fn save_last_played(&self, song_id: &str, position_secs: f64) -> Result<(), DbErr> {
+        let value = serde_json::json!({ "song_id": song_id, "position": position_secs });
+        self.update_setting(Self::LAST_PLAYED_KEY, &value).await
+    }
+
+    /// Load the last-played snapshot, if any.
+    pub async fn load_last_played(&self) -> Result<Option<(String, f64)>, DbErr> {
+        match self.get_setting(Self::LAST_PLAYED_KEY).await? {
+            Some(val) => {
+                let song_id = val.get("song_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let position = val.get("position").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if song_id.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some((song_id, position)))
+                }
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

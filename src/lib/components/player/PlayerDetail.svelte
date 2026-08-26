@@ -13,11 +13,15 @@
     Gauge,
     ChevronDown,
     Minus,
+    Plus,
     Maximize,
     X,
   } from "lucide-svelte";
   import VolumeControl from "$lib/components/player/VolumeControl.svelte";
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
+  import TagEditor from "$lib/components/tag/TagEditor.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
+  import type { Song } from "$lib/types";
 
   const appWindow = getCurrentWindow();
 
@@ -85,7 +89,11 @@
     appWindow.toggleMaximize();
   }
   function closeWindow() {
-    appWindow.close();
+    if (settingsStore.settings.close_to_tray) {
+      appWindow.hide();
+    } else {
+      appWindow.close();
+    }
   }
 
   // Lyrics
@@ -121,6 +129,83 @@
     return l ?? "暂无歌词";
   }
 
+  // ── Timed lyrics: parse [mm:ss] markers, highlight the active line ──
+  let lrcLines = $state<{ t: number; text: string }[]>([]);
+  function parseLrc(raw: string): { t: number; text: string }[] {
+    const out: { t: number; text: string }[] = [];
+    for (const line of raw.split("\n")) {
+      const m = line.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
+      if (m) out.push({ t: parseInt(m[1]) * 60 + parseFloat(m[2]), text: m[3] || "" });
+    }
+    out.sort((a, b) => a.t - b.t);
+    return out;
+  }
+  $effect(() => {
+    if (lyricsText) lrcLines = parseLrc(lyricsText);
+    else lrcLines = [];
+  });
+  let activeLineIdx = $derived.by(() => {
+    if (lrcLines.length === 0) return -1;
+    let idx = -1;
+    for (let i = 0; i < lrcLines.length; i++) {
+      if (lrcLines[i].t <= player.elapsed) idx = i;
+      else break;
+    }
+    return idx;
+  });
+
+  // ── Right-click lyrics → font size adjuster (minus / current / plus) ──
+  let lyrCtx = $state<{ x: number; y: number } | null>(null);
+  function openLyrMenu(e: MouseEvent) {
+    e.preventDefault();
+    lyrCtx = { x: e.clientX, y: e.clientY };
+  }
+  function closeLyrMenu() {
+    lyrCtx = null;
+  }
+  function lyrDec() {
+    const cur = settingsStore.settings.lyrics_font_size ?? 14;
+    settingsStore.update("lyrics_font_size", Math.max(10, cur - 1));
+  }
+  function lyrInc() {
+    const cur = settingsStore.settings.lyrics_font_size ?? 14;
+    settingsStore.update("lyrics_font_size", Math.min(48, cur + 1));
+  }
+
+  // ── Drag on lyrics to seek ──
+  let dragging = $state(false);
+  function onLyrPointerDown(e: PointerEvent) {
+    if (player.duration <= 0) return;
+    dragging = true;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    seekFromLyr(e);
+  }
+  function seekFromLyr(e: PointerEvent) {
+    if (!dragging || player.duration <= 0) return;
+    const target = e.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const pct = (e.clientY - rect.top) / rect.height;
+    const secs = Math.max(0, Math.min(1, pct)) * player.duration;
+    void invoke("seek", { positionSecs: secs });
+    player.elapsed = secs;
+  }
+  function onLyrPointerMove(e: PointerEvent) {
+    if (dragging) seekFromLyr(e);
+  }
+  function onLyrPointerUp(e: PointerEvent) {
+    dragging = false;
+    const el = e.currentTarget as HTMLElement;
+    if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  }
+
+  // Apply user config to the lyrics block (alignment + font size).
+  let LyricsStyle = $derived.by(() => {
+    const align = settingsStore.settings.lyrics_align ?? "center";
+    const size = settingsStore.settings.lyrics_font_size ?? 14;
+    const ta = align === "left" ? "left" : align === "right" ? "right" : "center";
+    return "text-align: " + ta + "; font-size: " + size + "px;";
+  });
+
   // ── Playback rate popup ──────────────────────────
   let rateOpen = $state(false);
   let rateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -133,6 +218,23 @@
   }
   function rateLeave() {
     rateTimer = setTimeout(() => (rateOpen = false), 150);
+  }
+
+  // ── Tag editor for the current song ─────────────
+  let tagSong = $state<Song | null>(null);
+
+  async function openTagEditor() {
+    if (!player.mediaId) return;
+    try {
+      const song = await invoke<Song>("get_song", { id: player.mediaId });
+      if (song) tagSong = song;
+    } catch (e) {
+      console.error("get song for tag error:", e);
+    }
+  }
+
+  function closeTagEditor() {
+    tagSong = null;
   }
 </script>
 
@@ -167,10 +269,28 @@
       {#if lyricsLoading}
         <p class="lyrics-hint">加载歌词...</p>
       {:else if lyricsText}
-        <div class="lyrics-content">
-          {#each lyricsText.split("\n") as line}
-            <p class="lyrics-line" class:lyrics-empty={!line.trim()}>{line}</p>
-          {/each}
+        <div
+          class="lyrics-content"
+          style={LyricsStyle}
+          oncontextmenu={openLyrMenu}
+          onpointerdown={onLyrPointerDown}
+          onpointermove={onLyrPointerMove}
+          onpointerup={onLyrPointerUp}
+          onpointercancel={onLyrPointerUp}
+        >
+          {#if lrcLines.length > 0}
+            {#each lrcLines as lrc, i}
+              <p
+                class="lyrics-line"
+                class:active={i === activeLineIdx}
+                class:lyrics-empty={!lrc.text.trim()}
+              >{lrc.text}</p>
+            {/each}
+          {:else}
+            {#each lyricsText.split("\n") as line}
+              <p class="lyrics-line" class:lyrics-empty={!line.trim()}>{line}</p>
+            {/each}
+          {/if}
         </div>
       {:else}
         <div class="lyrics-placeholder">
@@ -187,12 +307,23 @@
     <div class="bottom-left">
       <!-- control icons, right-aligned -->
       <div class="tools-row">
-        <button class="d-btn" title="播放速度" aria-label="播放速度" onclick={() => (rateOpen = !rateOpen)}>
-          <Gauge size={16} />
-        </button>
+        <div class="rate-wrap" onmouseenter={rateEnter} onmouseleave={rateLeave}>
+          <button class="d-btn" title="播放速度" aria-label="播放速度" onclick={() => (rateOpen = !rateOpen)}>
+            <Gauge size={16} />
+          </button>
+          {#if rateOpen}
+            <div class="popup">
+              {#each rates as r}
+                <button class="pop-item" class:active={rate === r} onclick={() => { rate = r; rateOpen = false; }}>
+                  {r}x
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
         <VolumeControl />
         <PlayModeControl />
-        <button class="d-btn" title="编辑标签" aria-label="编辑标签">
+        <button class="d-btn" title="编辑标签" aria-label="编辑标签" onclick={openTagEditor}>
           <Tag size={16} />
         </button>
       </div>
@@ -223,6 +354,19 @@
     </div>
   </div>
 </div>
+
+{#if tagSong}
+  <TagEditor song={tagSong} onclose={closeTagEditor} />
+{/if}
+
+{#if lyrCtx}
+  <div class="lyr-pop-backdrop" onclick={closeLyrMenu}></div>
+  <div class="lyr-pop" style="left: {lyrCtx.x}px; top: {lyrCtx.y}px">
+    <button class="lyr-btn" onclick={lyrDec} aria-label="缩小字体"><Minus size={15} /></button>
+    <span class="lyr-size">{settingsStore.settings.lyrics_font_size ?? 14}px</span>
+    <button class="lyr-btn" onclick={lyrInc} aria-label="放大字体"><Plus size={15} /></button>
+  </div>
+{/if}
 
 <style>
   .detail-overlay {
@@ -270,6 +414,11 @@
     overflow-y: auto;
   }
 
+  /* The lyrics block sits on the far right. */
+  .detail-main .detail-lyrics {
+    margin-left: auto;
+  }
+
   .detail-left {
     flex: 0 0 auto;
     display: flex;
@@ -307,7 +456,8 @@
     overflow-y: auto; display: flex; flex-direction: column; justify-content: center;
   }
   .lyrics-content { padding: 8px 0; line-height: 1.9; }
-  .lyrics-line { font-size: 14px; color: var(--color-base-content) / 0.85; white-space: pre-wrap; word-break: break-word; }
+  .lyrics-line { font-size: 14px; color: var(--color-base-content) / 0.6; white-space: pre-wrap; word-break: break-word; transition: color 0.2s, transform 0.2s; }
+  .lyrics-line.active { color: var(--color-base-content); transform: scale(1.18); font-weight: 600; }
   .lyrics-empty { height: 0.5em; }
   .lyrics-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -320,7 +470,7 @@
 
   .detail-bottom {
     flex-shrink: 0;
-    padding: 0 28px 20px 130px;
+    padding: 0 28px 20px;
     display: flex;
     align-items: flex-end;
     gap: 22px;
@@ -357,15 +507,15 @@
 
   .transport-group { display: flex; align-items: center; gap: 8px; flex: none; }
 
-  .pop-wrap { position: relative; display: flex; align-items: center; }
+  .pop-wrap, .rate-wrap { position: relative; display: flex; align-items: center; }
 
   .popup {
     position: absolute; bottom: 44px; left: 50%;
     transform: translateX(-50%);
     background: var(--color-base-300);
-    border: 1px solid var(--color-base-content) / 0.1;
+    border: 1px solid var(--panel-border);
     border-radius: 8px; padding: 4px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    box-shadow: var(--shadow-md);
     z-index: 60; white-space: nowrap;
     display: flex; flex-direction: column; gap: 2px;
   }
@@ -392,4 +542,30 @@
     color: var(--color-base-content);
   }
   .d-btn.play-big:hover { color: var(--color-primary); }
+
+  .lyr-pop-backdrop {
+    position: fixed; inset: 0; z-index: 500; background: transparent;
+  }
+  .lyr-pop {
+    position: fixed; z-index: 501;
+    transform: translate(-50%, -100%);
+    margin-top: -8px;
+    display: flex; align-items: center; gap: 10px;
+    background: var(--color-base-300);
+    border: 1px solid var(--panel-border-strong);
+    border-radius: 8px;
+    padding: 6px 10px;
+    box-shadow: var(--shadow-md);
+  }
+  .lyr-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 6px;
+    color: var(--color-base-content); background: none; border: none;
+  }
+  .lyr-btn:hover { background: var(--color-base-200); }
+  .lyr-size {
+    min-width: 44px; text-align: center;
+    font-size: 13px; font-weight: 600;
+    color: var(--color-primary); font-variant-numeric: tabular-nums;
+  }
 </style>

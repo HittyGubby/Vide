@@ -18,6 +18,24 @@ pub async fn list_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, 
         .map_err(|e| e.to_string())
 }
 
+/// Import a batch of songs (upsert). Returns the number imported.
+#[tauri::command]
+pub async fn import_songs(
+    state: tauri::State<'_, AppState>,
+    songs: Vec<Song>,
+) -> Result<u64, String> {
+    let mut count = 0u64;
+    for song in &songs {
+        state
+            .db
+            .upsert_song(song)
+            .await
+            .map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 #[tauri::command]
 pub async fn list_library_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, String> {
     state
@@ -53,6 +71,58 @@ pub async fn add_library_root(
     Ok(())
 }
 
+/// Remove an included library root by path.
+#[tauri::command]
+pub async fn remove_library_root(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let mut config = state.config.lock().await;
+    let p = std::path::PathBuf::from(&path);
+    config.library_roots.retain(|r| r != &p);
+    config.save(&*state.db).await.map_err(|e| e.to_string())
+}
+
+/// Get the excluded folder list.
+#[tauri::command]
+pub async fn get_exclude_roots(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let config = state.config.lock().await;
+    Ok(config
+        .exclude_roots
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect())
+}
+
+/// Add an excluded folder.
+#[tauri::command]
+pub async fn add_exclude_root(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let mut config = state.config.lock().await;
+    let p = std::path::PathBuf::from(&path);
+    if !config.exclude_roots.contains(&p) {
+        config.exclude_roots.push(p);
+        config.save(&*state.db).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Remove an excluded folder by path.
+#[tauri::command]
+pub async fn remove_exclude_root(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let mut config = state.config.lock().await;
+    let p = std::path::PathBuf::from(&path);
+    config.exclude_roots.retain(|r| r != &p);
+    config.save(&*state.db).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_song(
     state: tauri::State<'_, AppState>,
@@ -63,6 +133,35 @@ pub async fn get_song(
         .get_song(&SongId(id))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Clear (delete) the cached media for a song, forcing a fresh fetch on
+/// the next playback. Returns the number of cache entries removed.
+#[tauri::command]
+pub async fn clear_song_cache(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<u64, String> {
+    let song_id = SongId(id.clone());
+    let entries = state
+        .db
+        .get_cache_entries(&song_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(entry) = entries.first() {
+        // Remove the on-disk file(s) too.
+        let _ = std::fs::remove_file(&entry.path);
+        let _ = std::fs::remove_file(entry.path.with_extension("tmp"));
+    }
+
+    state
+        .db
+        .delete_cache_entry(&song_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(entries.len() as u64)
 }
 
 #[tauri::command]
@@ -358,6 +457,59 @@ pub async fn set_last_search_preset(
     state
         .db
         .set_last_search_preset(&id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── App Settings ──────────────────────────────────────────────────
+
+/// Get the full app settings object.
+#[tauri::command]
+pub async fn get_app_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::models::AppSettings, String> {
+    state
+        .db
+        .load_app_settings()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Save the full app settings object.
+#[tauri::command]
+pub async fn set_app_settings(
+    state: tauri::State<'_, AppState>,
+    settings: crate::models::AppSettings,
+) -> Result<(), String> {
+    state
+        .db
+        .save_app_settings(&settings)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get the last-played song id + position snapshot.
+#[tauri::command]
+pub async fn get_last_played(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<(String, f64)>, String> {
+    state
+        .db
+        .load_last_played()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the last-played song id + position.
+#[tauri::command]
+pub async fn save_last_played(
+    state: tauri::State<'_, AppState>,
+    song_id: String,
+    position_secs: f64,
+) -> Result<(), String> {
+    state
+        .db
+        .save_last_played(&song_id, position_secs)
         .await
         .map_err(|e| e.to_string())
 }

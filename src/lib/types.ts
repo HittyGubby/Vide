@@ -106,3 +106,14 @@ export interface SearchResultItem {
   album?: string;
   duration?: number;
 }
+
+/* ── App Settings ──────────────────────── */
+export interface AppSettings {
+  close_to_tray: boolean;
+  auto_play_on_start: boolean;
+  pause_on_device_change: boolean;
+  window_scale: number;
+  font_family: string;
+  lyrics_align: string; // 'left' | 'center' | 'right'
+  lyrics_font_size: number;
+}

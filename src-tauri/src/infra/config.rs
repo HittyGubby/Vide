@@ -8,6 +8,7 @@ use crate::infra::db::Database;
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub library_roots: Vec<PathBuf>,
+    pub exclude_roots: Vec<PathBuf>,
     pub plugin_dir: PathBuf,
     pub concurrency_limits: HashMap<String, u32>,
 }
@@ -18,6 +19,7 @@ impl Default for AppConfig {
         limits.insert("yt-dlp".to_string(), 2);
         Self {
             library_roots: Vec::new(),
+            exclude_roots: Vec::new(),
             plugin_dir: PathBuf::from("plugins"),
             concurrency_limits: limits,
         }
@@ -32,6 +34,12 @@ impl AppConfig {
         if let Some(val) = db.get_setting("library_roots").await? {
             if let Ok(roots) = serde_json::from_value::<Vec<String>>(val) {
                 config.library_roots = roots.into_iter().map(PathBuf::from).collect();
+            }
+        }
+
+        if let Some(val) = db.get_setting("exclude_roots").await? {
+            if let Ok(roots) = serde_json::from_value::<Vec<String>>(val) {
+                config.exclude_roots = roots.into_iter().map(PathBuf::from).collect();
             }
         }
 
@@ -58,6 +66,14 @@ impl AppConfig {
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         db.update_setting("library_roots", &serde_json::json!(roots))
+            .await?;
+
+        let exclusions: Vec<String> = self
+            .exclude_roots
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        db.update_setting("exclude_roots", &serde_json::json!(exclusions))
             .await?;
 
         db.update_setting(

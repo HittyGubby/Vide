@@ -5,6 +5,7 @@
   import { Search, ChevronDown, X } from "lucide-svelte";
   import { ui } from "$lib/stores/ui.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
   import type { SearchResultItem } from "$lib/types";
 
   const appWindow = getCurrentWindow();
@@ -38,7 +39,12 @@
     appWindow.toggleMaximize();
   }
   function close() {
-    appWindow.close();
+    // If "close to tray" is enabled, hide to tray instead of quitting.
+    if (settingsStore.settings.close_to_tray) {
+      appWindow.hide();
+    } else {
+      appWindow.close();
+    }
   }
 
   function focusSearch() {

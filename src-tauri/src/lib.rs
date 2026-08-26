@@ -98,12 +98,18 @@ pub fn run() {
             // Library
             features::ui::list_songs,
             features::ui::list_library_songs,
+            features::ui::import_songs,
             features::ui::get_song,
             features::ui::search_songs,
             features::ui::scan_library,
+            features::ui::clear_song_cache,
             // Config
             features::ui::get_library_roots,
             features::ui::add_library_root,
+            features::ui::remove_library_root,
+            features::ui::get_exclude_roots,
+            features::ui::add_exclude_root,
+            features::ui::remove_exclude_root,
             // Playback
             features::ui::get_player_status,
             features::ui::get_lyrics,
@@ -123,6 +129,11 @@ pub fn run() {
             features::ui::delete_search_preset,
             features::ui::get_last_search_preset,
             features::ui::set_last_search_preset,
+            // App Settings
+            features::ui::get_app_settings,
+            features::ui::set_app_settings,
+            features::ui::get_last_played,
+            features::ui::save_last_played,
             // Tags
             features::ui::get_meta_tags,
             features::ui::add_tag,

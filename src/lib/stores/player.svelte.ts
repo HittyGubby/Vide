@@ -10,6 +10,37 @@ class PlayerStore {
   elapsed = $state(0);
   duration = $state(0);
   isPlaying = $state(false);
+  _saveTick = 0;
+
+  /** Save the current song id + position (throttled) so we can resume. */
+  async saveProgress() {
+    if (!this.mediaId) return;
+    try {
+      await invoke("save_last_played", {
+        songId: this.mediaId,
+        positionSecs: Math.round(this.elapsed * 10) / 10,
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  /** Load the last-played snapshot, if any. */
+  async getLastPlayed(): Promise<{ songId: string; position: number } | null> {
+    try {
+      const r = await invoke<[string, number] | { song_id: string; position: number } | null>(
+        "get_last_played",
+      );
+      if (!r) return null;
+      // Backend may return a tuple or an object.
+      if (Array.isArray(r)) {
+        return { songId: r[0], position: r[1] ?? 0 };
+      }
+      return { songId: r.song_id, position: r.position ?? 0 };
+    } catch {
+      return null;
+    }
+  }
 
   /** Poll the backend for current playback status. */
   async poll() {
@@ -26,6 +57,12 @@ class PlayerStore {
       this.duration = status.duration_secs ?? 0;
 
       const newId = status.media_id ?? null;
+      // Remember progress while playing (save ~every 5 seconds of position change).
+      this._saveTick = (this._saveTick ?? 0) + 1;
+      if (this.isPlaying && this._saveTick % 5 === 0) {
+        void this.saveProgress();
+      }
+
       if (newId && newId !== this.mediaId) {
         this.mediaId = newId;
         // Fetch song details
