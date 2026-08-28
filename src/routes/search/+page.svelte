@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { Search, History, Play, Loader, X } from "lucide-svelte";
+  import { Search, History, Play, Loader, X, Download } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
   import type { SearchResultItem } from "$lib/types";
@@ -68,6 +68,8 @@
 
   function selectType(t: "music" | "songlist") {
     searchType = t;
+    // Re-run the current query against the newly selected result type.
+    if (searched && query.trim()) doSearch();
   }
 
   async function playResult(item: SearchResultItem) {
@@ -89,6 +91,40 @@
   function useHistory(h: string) {
     query = h;
     doSearch();
+  }
+
+  // Build a plausible playlist URL for an online search result so it can be
+  // imported via the plugin (works for single-video / playlist ids on supported
+  // platforms like YouTube & Bilibili).
+  function playlistUrlOf(item: SearchResultItem): string {
+    const p = item.platform.toLowerCase();
+    if (p.includes("youtube") || p === "yt") {
+      return "https://www.youtube.com/playlist?list=" + item.id;
+    }
+    if (p.includes("bilibili") || p === "bili") {
+      return "https://www.bilibili.com/video/" + item.id;
+    }
+    return "";
+  }
+
+  // Songlist mode: import the result (a playlist) into the library.
+  let importingId = $state<string | null>(null);
+  async function importResult(item: SearchResultItem) {
+    const url = playlistUrlOf(item);
+    if (!url) {
+      error = "暂不支持导入该平台歌单";
+      return;
+    }
+    importingId = item.id;
+    try {
+      await invoke("import_playlist_url", { url });
+      error = "已导入歌单";
+    } catch (e) {
+      console.error("import playlist error:", e);
+      error = String(e);
+    } finally {
+      importingId = null;
+    }
   }
 
   function removeHistory(h: string) {
@@ -187,7 +223,7 @@
   {:else if results.length > 0}
     <div class="results">
       {#each results as item, i}
-        <div class="result-row" role="button" tabindex="0" onclick={() => playResult(item)} onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}>
+        <div class="result-row" role="button" tabindex="0" onclick={() => (searchType === "songlist" ? importResult(item) : playResult(item))} onkeydown={(e) => { if (e.key === "Enter") (searchType === "songlist" ? importResult(item) : playResult(item)); }}>
           <div class="res-index">{i + 1}</div>
           <div class="res-main">
             <span class="res-title truncate">{item.title}</span>
@@ -195,8 +231,14 @@
           </div>
           <div class="res-artist truncate">{item.artist || ""}</div>
           <div class="res-duration">{item.duration ? formatDuration(item.duration) : ""}</div>
-          <button class="row-btn" onclick={(e) => { e.stopPropagation(); playResult(item); }}>
-            <Play size={14} />
+          <button class="row-btn" onclick={(e) => { e.stopPropagation(); searchType === "songlist" ? importResult(item) : playResult(item); }}>
+            {#if importingId === item.id}
+              <Loader size={14} class="spin" />
+            {:else if searchType === "songlist"}
+              <Download size={14} />
+            {:else}
+              <Play size={14} />
+            {/if}
           </button>
         </div>
       {/each}

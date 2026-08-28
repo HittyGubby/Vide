@@ -17,32 +17,40 @@
   interface ColumnDef {
     id: ColumnId;
     label: string;
-    /** Flex rank (relative grow weight). name is 1 (fills remaining). */
+    /** Flex rank (relative grow weight). Kept for reference only. */
     flex: number;
-    /** Fixed pixel width for # and time columns (resize disabled). */
+    /** Fixed pixel width for truly fixed columns (# and time) — not resizable. */
     fixed?: number;
-    /** Minimum flex weight when resizing. */
+    /** Default pixel width for resizable columns. */
+    defWidth?: number;
+    /** Minimum pixel width when resizing. */
     min?: number;
   }
 
   // Name column flex:1 → grows to fill remaining space; others use flex weights.
   const COLUMN_DEFS: ColumnDef[] = [
     { id: "num", label: "#", flex: 0, fixed: 40 },
-    { id: "name", label: "名称", flex: 1, min: 0.5 },
-    { id: "tag", label: "标签", flex: 0.55, min: 0.2 },
-    { id: "artist", label: "歌手", flex: 0.45, min: 0.15 },
-    { id: "album", label: "专辑", flex: 0.5, min: 0.2 },
+    { id: "name", label: "名称", flex: 1, min: 120, defWidth: 340 },
+    { id: "tag", label: "标签", flex: 0.55, min: 80, defWidth: 180 },
+    { id: "artist", label: "歌手", flex: 0.45, min: 80, defWidth: 140 },
+    { id: "album", label: "专辑", flex: 0.5, min: 80, defWidth: 150 },
     { id: "time", label: "时长", flex: 0, fixed: 52 },
   ];
 
   interface ColumnState {
     id: ColumnId;
     shown: boolean;
-    /** px for fixed columns; flex weight for flexible columns. */
+    /**
+     * Width. For resizable columns this is a flex-weight (a share of the
+     * available width), e.g. name=1, tag=0.55. For fixed columns (# / time) it
+     * is a pixel width. Column widths are derived from these weights, so the
+     * row always fills the container and the rightmost column stays pinned to
+     * the right edge.
+     */
     width: number;
   }
 
-  // Default order: # / name / tag / artist / album / time (name flex:1 fills rest).
+  // Resizable columns use flex weights (share of available width).
   const DEFAULT_COLUMNS: ColumnState[] = [
     { id: "num", shown: true, width: 40 },
     { id: "name", shown: true, width: 1 },
@@ -60,14 +68,20 @@
       if (saved) {
         const data = JSON.parse(saved) as ColumnState[];
         return COLUMN_DEFS.map((def) => {
+          const dflt = DEFAULT_COLUMNS.find((d) => d.id === def.id)!;
           const found = data.find((c) => c.id === def.id);
-          return found
-            ? {
-                id: def.id,
-                shown: !!found.shown,
-                width: def.fixed != null ? def.fixed : Math.max(found.width, def.min ?? 0.1),
-              }
-            : { id: def.id, shown: true, width: def.fixed ?? def.flex };
+          if (!found) {
+            return { id: def.id, shown: true, width: dflt.width };
+          }
+          let w = found.width;
+          // Fixed columns (# / time) keep their px width.
+          if (def.fixed != null) {
+            return { id: def.id, shown: !!found.shown, width: def.fixed };
+          }
+          // Resizable columns store a flex weight. Migrate any legacy px value
+          // (> 2, from the earlier px-based scheme) back to the default weight.
+          if (w > 2) w = dflt.width;
+          return { id: def.id, shown: !!found.shown, width: w };
         });
       }
     } catch {
@@ -96,12 +110,47 @@
     // Fixed columns (num/time) are not resizable.
     if (def.fixed != null) return;
     const col = columns.find((c) => c.id === id)!;
+    // Width is a flex weight; clamp to a sensible minimum so columns never vanish.
     col.width = Math.max(width, def.min ?? 0.1);
     columns = columns.map((c) => (c.id === id ? { ...c } : c));
   }
 
+  // Resize map: the column being dragged plus the visible column to its right
+  // (if any). Dragging the boundary shifts weight from one to the other so the
+  // total stays constant and the other columns do not move.
+  let resizePair = $state<{ left: ColumnId; right: ColumnId | null; startW: number } | null>(null);
+
+  function startPairResize(e: PointerEvent, id: ColumnId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const th = (e.currentTarget as HTMLElement).closest(".th") as HTMLElement | null;
+    if (th) th.draggable = false;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    // The draggable column is `id`; the next visible column is its right neighbour.
+    const visible = visibleColumns.map((c) => c.id);
+    const idx = visible.indexOf(id);
+    const right = idx >= 0 && idx + 1 < visible.length ? visible[idx + 1] : null;
+    const rightDef = right !== null ? COLUMN_DEFS.find((d) => d.id === right)! : null;
+    resizePair = {
+      left: id,
+      right: rightDef && rightDef.fixed == null ? right : null,
+      startW: columns.find((c) => c.id === id)!.width,
+    };
+    resizeColId = id;
+    resizeStartX = e.clientX;
+    resizeStartWidth = columns.find((c) => c.id === id)!.width;
+  }
+
   // ── Reorder (drag header) — horizontal-only drag ghost ──
   function handleHeaderDragStart(e: DragEvent, id: ColumnId) {
+    // If a resize is in progress, suppress reorder drag (HTML5 drag would
+    // otherwise swallow pointer events and break the resize gesture).
+    if (resizeColId) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     dragColId = id;
     const dt = e.dataTransfer;
     if (!dt) return;
@@ -152,35 +201,51 @@
 
   // ── Resize (drag handle) — pointer capture for reliable up/down ──
   function startResize(e: PointerEvent, id: ColumnId) {
-    e.preventDefault();
-    e.stopPropagation();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    resizeColId = id;
-    resizeStartX = e.clientX;
-    resizeStartWidth = columns.find((c) => c.id === id)!.width;
+    startPairResize(e, id);
   }
 
   function onResizeMove(e: PointerEvent) {
-    if (!resizeColId) return;
+    if (!resizeColId || !resizePair) return;
     const delta = e.clientX - resizeStartX;
-    // Convert pixel delta to a flex-weight delta (name col ≈ 500px ⇔ weight 1).
-    updateWidth(resizeColId, resizeStartWidth + delta / 500);
+    // Convert the pixel delta to a weight delta relative to the container width.
+    const containerW = listEl ? listEl.clientWidth : 600;
+    const wDelta = delta / Math.max(containerW, 1);
+    const leftId = resizePair.left;
+    const rightId = resizePair.right;
+    if (rightId) {
+      // Shift weight from left column to right column and back, keeping the
+      // total constant so the other columns do not move.
+      const lc = columns.find((c) => c.id === leftId)!;
+      const rc = columns.find((c) => c.id === rightId)!;
+      const lw = Math.max(resizePair.startW + wDelta, COLUMN_DEFS.find((d) => d.id === leftId)!.min ?? 0.1);
+      const rw = Math.max(rc.width - (lw - resizePair.startW), COLUMN_DEFS.find((d) => d.id === rightId)!.min ?? 0.1);
+      columns = columns.map((c) =>
+        c.id === leftId ? { ...c, width: lw } : c.id === rightId ? { ...c, width: rw } : c,
+      );
+    } else {
+      updateWidth(leftId, resizePair.startW + wDelta);
+    }
   }
 
   function onResizeEnd(e: PointerEvent) {
     const el = e.currentTarget as HTMLElement;
     if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    // Re-enable reorder drag on the column header now that resizing is done.
+    const th = el?.closest?.(".th") as HTMLElement | null;
+    if (th) th.draggable = true;
     resizeColId = null;
+    resizePair = null;
     saveColumns();
   }
 
-  // Double-click resets to default (flex) weight.
+  // Double-click resets to the default (flex) weight.
   function resetWidth(e: MouseEvent, id: ColumnId) {
     e.preventDefault();
     e.stopPropagation();
     const def = COLUMN_DEFS.find((d) => d.id === id)!;
     const col = columns.find((c) => c.id === id)!;
-    col.width = def.fixed ?? def.flex;
+    // Reset to the default weight (fixed columns keep their px).
+    col.width = def.fixed ?? DEFAULT_COLUMNS.find((d) => d.id === id)!.width;
     columns = columns.map((c) => (c.id === id ? { ...c } : c));
     saveColumns();
   }
@@ -219,6 +284,39 @@
   let editingSong = $state<Song | null>(null);
   let activePresetId = $state<string | null>(null);
   let listEl = $state<HTMLDivElement | null>(null);
+  // Virtual window state (so long lists stay smooth).
+  let viewTop = $state(0);        // scrollTop (px)
+  let viewHeight = $state(0);     // viewport height (px)
+  // Width of the list's vertical scrollbar, so the header can pad its right
+  // edge to align with the rows (0 when there is no scrollbar).
+  let scrollbarWidth = $state(0);
+
+  function measureScrollbar() {
+    if (listEl) {
+      scrollbarWidth = Math.max(0, listEl.offsetWidth - listEl.clientWidth);
+    }
+  }
+
+  function onListScroll() {
+    if (listEl) {
+      viewTop = listEl.scrollTop;
+      viewHeight = listEl.clientHeight || 0;
+      measureScrollbar();
+    }
+    saveScroll();
+  }
+
+  // Re-measure the scrollbar width whenever the list element attaches or the
+  // rendered rows change, so the header's right padding stays aligned.
+  $effect(() => {
+    const _tick = viewHeight;
+    const _el = listEl;
+    const _n = sortedSongs.length;
+    if (_el) {
+      // Runs after DOM update.
+      queueMicrotask(() => measureScrollbar());
+    }
+  });
 
   // Remember the scroll position between visits (localStorage, UI-only).
   const SCROLL_KEY = "vide_list_scroll";
@@ -242,12 +340,16 @@
   async function scrollToSong(id: string) {
     locatorTarget = id;
     // Find the index in the current sorted list and center the row.
-    for (let attempt = 0; attempt < 20; attempt++) {
+    for (let attempt = 0; attempt < 40; attempt++) {
       await tick();
       const idx = sortedSongs.findIndex((s) => s.id === id);
       if (idx >= 0 && listEl) {
         const target = idx * ROW_H - (listEl.clientHeight / 2) + ROW_H / 2;
         listEl.scrollTop = Math.max(0, target);
+        // The virtual list relies on viewTop; update it explicitly because a
+        // programmatic scrollTop assignment does not always fire onscroll.
+        viewTop = listEl.scrollTop;
+        viewHeight = listEl.clientHeight || 0;
         saveScroll();
         break;
       }
@@ -258,7 +360,7 @@
 
   onMount(async () => {
     await searchPresets.load();
-    // If a locate target was requested (right-click player bar), force "全部歌曲".
+    // Handle an initial locate request (navigating here with ?locate=).
     const locateId = $page.url.searchParams.get("locate");
     const presetParam = $page.url.searchParams.get("preset");
     if (presetParam === "all") {
@@ -268,13 +370,31 @@
       activePresetId = searchPresets.activeId;
     }
     await loadSongs();
-
-    // After songs load: either locate a specific song, or restore scroll.
     if (locateId) {
       await scrollToSong(locateId);
     } else {
       await tick();
       restoreScroll();
+    }
+  });
+
+  // Reactive locate: the player bar signals a monotonic request id so
+  // repeated right-clicks on the SAME song always fire (a URL query does not
+  // change when the id is identical, so SvelteKit would skip navigation).
+  let _lastLocateReq = $state(-1);
+  $effect(() => {
+    const req = player.locateRequestId;
+    if (req > 0 && req !== _lastLocateReq) {
+      _lastLocateReq = req;
+      const locateId = player.locateSongId;
+      if (locateId) {
+        // Force "全部歌曲" so the song is present in this view.
+        activePresetId = null;
+        void searchPresets.select(null);
+        void loadSongs().then(() => scrollToSong(locateId));
+      }
+    } else if (req === 0) {
+      _lastLocateReq = -1;
     }
   });
 
@@ -369,14 +489,39 @@
     return list;
   });
 
+  // Virtual slice of the list to render (+ overscan) so long lists stay smooth.
+  const OVERSCAN = 8;
+  let virtualSlice = $derived.by(() => {
+    const n = sortedSongs.length;
+    if (n === 0) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+    const h = viewHeight || 600;
+    const first = Math.max(0, Math.floor(viewTop / ROW_H) - OVERSCAN);
+    const last = Math.min(n, Math.ceil((viewTop + h) / ROW_H) + OVERSCAN);
+    return {
+      start: first,
+      end: last,
+      padTop: first * ROW_H,
+      padBottom: Math.max(0, (n - last) * ROW_H),
+    };
+  });
+
   async function playSong(song: Song) {
     try {
-      await invoke("play_song", { id: song.id });
+      // Register the current visible list as the queue and start playing the
+      // chosen song — the Rust backend owns sequencing & auto-advance.
       player.mediaId = song.id;
-      player.title = song.title;
-      player.artist = song.artist;
-      player.album = song.album;
-      player.isPlaying = true;
+      await player.playFromList(
+        sortedSongs.map((s) => ({
+          id: s.id,
+          title: s.metadata?.display_title ?? s.title,
+          artist: s.metadata?.artist_override ?? s.artist,
+          album: s.metadata?.album ?? s.album ?? "",
+        })),
+        song.id,
+      );
+      player.title = song.metadata?.display_title ?? song.title;
+      player.artist = song.metadata?.artist_override ?? song.artist;
+      player.album = song.metadata?.album ?? song.album ?? "";
     } catch (e) {
       console.error("play error:", e);
     }
@@ -450,6 +595,25 @@
     }
   }
 
+  // Download an online song into the local cache/library.
+  let downloadNote = $state<string | null>(null);
+  async function downloadSong(song: Song) {
+    try {
+      const n = await invoke<number>("download_song", { id: song.id });
+      if (n > 0) {
+        downloadNote = "已下载（" + n + " 个路径）";
+        await loadSongs();
+      } else {
+        downloadNote = "已是本地文件";
+      }
+      setTimeout(() => (downloadNote = null), 3000);
+    } catch (e) {
+      console.error("download error:", e);
+      downloadNote = "下载失败: " + String(e);
+      setTimeout(() => (downloadNote = null), 4000);
+    }
+  }
+
   // ── Context menu ──────────────────────────────────
   let ctxSong = $state<Song | null>(null);
   let ctxPos = $state<{ x: number; y: number } | null>(null);
@@ -477,7 +641,7 @@
         ? [{ label: "跳转详情", icon: ExternalLink, action: () => jumpToDetail(ctxSong!) } as MenuItem]
         : []),
       { label: "清空该曲缓存", icon: Trash2, action: () => clearCache(ctxSong!) },
-      { label: "下载", icon: Download, action: () => {}, disabled: true },
+      { label: "下载", icon: Download, action: () => downloadSong(ctxSong!) },
     ] as MenuItem[];
   });
 
@@ -492,7 +656,12 @@
   function colStyle(id: ColumnId): string {
     const def = COLUMN_DEFS.find((d) => d.id === id)!;
     const w = columns.find((c) => c.id === id)!.width;
-    if (def.fixed != null) return "width: " + def.fixed + "px; flex: 0 0 " + def.fixed + "px;";
+    // Fixed columns (# / time) use px. Resizable columns use a flex weight, so
+    // the row always fills the container and the rightmost column stays pinned
+    // to the right edge.
+    if (def.fixed != null) {
+      return "flex: 0 0 " + w + "px; width: " + w + "px; min-width: 0;";
+    }
     return "flex: " + w + " 1 0; min-width: 0;";
   }
 </script>
@@ -507,7 +676,7 @@
 
   <div class="library-main">
     <!-- Table header -->
-    <div class="table-header">
+    <div class="table-header" style="padding-right: {scrollbarWidth}px">
       {#each visibleColumns as col}
         <div
           class="th"
@@ -554,8 +723,10 @@
         <p class="empty-desc">添加库目录或导入播放列表开始使用</p>
       </div>
     {:else}
-      <div class="song-list" bind:this={listEl} onscroll={saveScroll}>
-        {#each sortedSongs as song, i}
+      <div class="song-list" bind:this={listEl} onscroll={onListScroll}>
+        <div class="virtual-pad" style="height: {virtualSlice.padTop}px"></div>
+        {#each sortedSongs.slice(virtualSlice.start, virtualSlice.end) as song, k}
+          {@const i = virtualSlice.start + k}
           <div
             class="song-row"
             class:playing={isPlaying(song)}
@@ -598,6 +769,7 @@
             {/each}
           </div>
         {/each}
+        <div class="virtual-pad" style="height: {virtualSlice.padBottom}px"></div>
       </div>
     {/if}
   </div>
@@ -655,8 +827,7 @@
     align-items: center;
     padding: 0 8px;
     min-width: 0;
-    overflow: hidden;
-    border-right: 1px solid transparent;
+    border-right: 1px solid var(--panel-border);
   }
 
   .th.dragging { opacity: 0.5; }
@@ -687,12 +858,12 @@
 
   .resize-handle {
     position: absolute;
-    right: -3px;
+    right: 0;
     top: 0;
     bottom: 0;
     width: 7px;
     cursor: col-resize;
-    z-index: 2;
+    z-index: 3;
   }
   .resize-handle::after {
     content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px;
@@ -702,6 +873,7 @@
 
   /* Body */
   .song-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
+  .virtual-pad { flex-shrink: 0; }
   .song-row {
     display: flex;
     align-items: center;

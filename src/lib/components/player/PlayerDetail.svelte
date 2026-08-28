@@ -19,6 +19,7 @@
   } from "lucide-svelte";
   import VolumeControl from "$lib/components/player/VolumeControl.svelte";
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
+  import SeekBar from "$lib/components/player/SeekBar.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import type { Song } from "$lib/types";
@@ -33,10 +34,6 @@
     return () => clearInterval(pollTimer);
   });
 
-  let progressPct = $derived(
-    player.duration > 0 ? Math.min((player.elapsed / player.duration) * 100, 100) : 0,
-  );
-
   function formatTime(secs: number): string {
     if (!secs || secs <= 0) return "0:00";
     const m = Math.floor(secs / 60);
@@ -48,34 +45,16 @@
   let durationFormatted = $derived(formatTime(player.duration));
 
   async function togglePlay() {
-    if (player.isPlaying) {
-      try {
-        await invoke("stop_playback");
-        player.isPlaying = false;
-      } catch (e) {
-        console.error("stop error:", e);
-      }
-    } else if (player.mediaId) {
-      try {
-        await invoke("play_song", { id: player.mediaId });
-        player.isPlaying = true;
-      } catch (e) {
-        console.error("play error:", e);
-      }
-    }
+    await player.togglePause();
   }
 
-  async function seekTrack(e: MouseEvent) {
-    if (!player.isPlaying || player.duration <= 0) return;
-    const target = e.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
-    const targetSecs = pct * player.duration;
+  async function seekTrack(targetSecs: number) {
+    if (player.duration <= 0) return;
     try {
       await invoke("seek", { positionSecs: targetSecs });
       player.elapsed = targetSecs;
     } catch {
-      /* seek not supported */
+      /* seek not supported in this mode */
     }
   }
 
@@ -211,6 +190,10 @@
   let rateTimer: ReturnType<typeof setTimeout> | undefined;
   const rates = [0.5, 0.75, 1, 1.25, 1.5, 2];
   let rate = $state(1);
+  // Keep the local rate in sync with the player's actual speed.
+  $effect(() => {
+    rate = player.speed;
+  });
 
   function rateEnter() {
     clearTimeout(rateTimer);
@@ -218,6 +201,13 @@
   }
   function rateLeave() {
     rateTimer = setTimeout(() => (rateOpen = false), 150);
+  }
+
+  // Apply a playback rate to the player (mpv speed) and remember it.
+  async function applyRate(rx: number) {
+    if (!isFinite(rx) || rx <= 0) return;
+    rate = rx;
+    await player.setSpeed(rx);
   }
 
   // ── Tag editor for the current song ─────────────
@@ -312,12 +302,41 @@
             <Gauge size={16} />
           </button>
           {#if rateOpen}
-            <div class="popup">
-              {#each rates as r}
-                <button class="pop-item" class:active={rate === r} onclick={() => { rate = r; rateOpen = false; }}>
-                  {r}x
-                </button>
-              {/each}
+            <div class="popup rate-popup">
+              <div class="rate-header">
+                <span>播放速度</span>
+                <span class="rate-val">{rate.toFixed(2)}x</span>
+              </div>
+              <input
+                type="range"
+                min="0.25"
+                max="3"
+                step="0.05"
+                value={rate}
+                oninput={(e) => applyRate(parseFloat((e.currentTarget as HTMLInputElement).value))}
+                class="rate-slider"
+              />
+              <div class="rate-presets">
+                {#each rates as r}
+                  <button class="pop-item" class:active={rate === r} onclick={() => applyRate(r)}>
+                    {r}x
+                  </button>
+                {/each}
+              </div>
+              <div class="rate-custom">
+                <span>自定义</span>
+                <input
+                  type="number"
+                  min="0.1"
+                  max="5"
+                  step="0.1"
+                  value={rate}
+                  onchange={(e) => applyRate(parseFloat((e.currentTarget as HTMLInputElement).value))}
+                  onkeydown={(e) => { if (e.key === "Enter") applyRate(parseFloat((e.currentTarget as HTMLInputElement).value)); }}
+                  class="rate-input"
+                />
+                <span>×</span>
+              </div>
             </div>
           {/if}
         </div>
@@ -329,9 +348,13 @@
       </div>
 
       <!-- progress bar fills left width -->
-      <div class="progress-track" role="slider" tabindex="0" aria-label="播放进度" onclick={seekTrack}>
-        <div class="progress-fill" style="width: {progressPct}%"></div>
-      </div>
+      <SeekBar
+        elapsed={player.elapsed}
+        duration={player.duration}
+        playing={player.isPlaying}
+        speed={player.speed}
+        onseek={seekTrack}
+      />
 
       <!-- time, right-aligned -->
       <div class="time-row">
@@ -342,7 +365,7 @@
 
     <!-- Right block: transport buttons -->
     <div class="transport-group">
-      <button class="d-btn big" title="上一首" disabled><SkipBack size={22} /></button>
+      <button class="d-btn big" title="上一首" aria-label="上一首" onclick={() => player.playPrev()}><SkipBack size={22} /></button>
       <button class="d-btn play-big" onclick={togglePlay} title="播放/暂停">
         {#if player.isPlaying}
           <Pause size={26} fill="currentColor" />
@@ -350,7 +373,7 @@
           <Play size={26} fill="currentColor" />
         {/if}
       </button>
-      <button class="d-btn big" title="下一首" disabled><SkipForward size={22} /></button>
+      <button class="d-btn big" title="下一首" aria-label="下一首" onclick={() => player.playNext()}><SkipForward size={22} /></button>
     </div>
   </div>
 </div>
@@ -491,13 +514,6 @@
     gap: 4px;
   }
 
-  .progress-track {
-    width: 100%; height: 6px; background: var(--color-base-300);
-    border-radius: 3px; overflow: hidden; cursor: pointer; position: relative;
-  }
-  .progress-track::before { content: ""; position: absolute; inset: -8px 0; }
-  .progress-fill { height: 100%; background: var(--color-primary); border-radius: 3px; pointer-events: none; transition: width 0.4s linear; }
-
   .time-row {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px;
@@ -526,6 +542,27 @@
   }
   .pop-item:hover { background: var(--color-base-200); color: var(--color-base-content); }
   .pop-item.active { color: var(--color-primary); }
+
+  .rate-popup { width: 180px; padding: 10px; gap: 8px; }
+  .rate-header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; color: var(--color-base-content) / 0.8;
+  }
+  .rate-val { color: var(--color-primary); font-weight: 600; }
+  .rate-slider { width: 100%; accent-color: var(--color-primary); }
+  .rate-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+  .rate-presets .pop-item { padding: 3px 8px; font-size: 11px; }
+  .rate-custom {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--color-base-content) / 0.8;
+  }
+  .rate-input {
+    width: 64px; height: 26px; padding: 0 6px; border-radius: 5px;
+    background: var(--color-base-200); border: 1px solid var(--panel-border);
+    color: var(--color-base-content); font-size: 12px; text-align: right;
+    user-select: text;
+  }
+  .rate-input:focus { border-color: var(--color-primary); }
 
   .d-btn {
     display: flex; align-items: center; justify-content: center;

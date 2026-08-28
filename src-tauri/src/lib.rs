@@ -103,6 +103,7 @@ pub fn run() {
             features::ui::search_songs,
             features::ui::scan_library,
             features::ui::clear_song_cache,
+            features::ui::download_song,
             // Config
             features::ui::get_library_roots,
             features::ui::add_library_root,
@@ -114,12 +115,21 @@ pub fn run() {
             features::ui::get_player_status,
             features::ui::get_lyrics,
             features::ui::play_song,
+            features::ui::set_play_queue,
+            features::ui::play_next,
+            features::ui::play_prev,
+            features::ui::set_play_mode,
             features::ui::stop_playback,
+            features::ui::toggle_pause,
             // Seek
             features::ui::seek,
+            features::ui::set_speed,
+            features::ui::set_volume,
+            features::ui::set_mute,
             // Online Search
             features::ui::search_online,
             features::ui::resolve_song,
+            features::ui::import_playlist_url,
             // Search
             features::ui::fuzzy_search_songs,
             features::ui::autocomplete,
@@ -150,6 +160,19 @@ pub fn run() {
             features::ui::stop_server,
             features::ui::get_server_status,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // When the app is about to exit, stop playback so the mpv
+            // subprocess is terminated and does not keep playing.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app.try_state::<app::AppState>() {
+                    let player = state.player.clone();
+                    let handle = tauri::async_runtime::block_on(async move {
+                        player.lock().await.stop().await
+                    });
+                    let _ = handle;
+                }
+            }
+        });
 }

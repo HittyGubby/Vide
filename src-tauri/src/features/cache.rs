@@ -100,6 +100,106 @@ impl CacheManager {
         Ok(None)
     }
 
+    /// Download a plugin stream descriptor's bytes into the cache.
+    ///
+    /// Handles both descriptor types:
+    /// - `url_stream`: fetch via HTTP (reqwest)
+    /// - `stream` (pipe): spawn the process and read stdout
+    ///
+    /// Returns the cached file path on success.
+    pub async fn download_from_descriptor(
+        &self,
+        song_id: &SongId,
+        descriptor: &crate::features::plugin::types::StreamDescriptor,
+    ) -> io::Result<PathBuf> {
+        match descriptor {
+            crate::features::plugin::types::StreamDescriptor::UrlStream {
+                id, url, headers, ..
+            } => {
+                // Fetch the URL and stream bytes into the cache.
+                let client = reqwest::Client::new();
+                let mut req = client.get(url);
+                if let Some(hdrs) = headers {
+                    for (k, v) in hdrs {
+                        req = req.header(k.as_str(), v.as_str());
+                    }
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("fetch {url}: {e}")))?;
+                if !resp.status().is_success() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("fetch {url}: HTTP {}", resp.status()),
+                    ));
+                }
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("read body: {e}")))?;
+                self.cache_media(song_id, &bytes[..], id).await
+            }
+            crate::features::plugin::types::StreamDescriptor::Pipe { id, exec } => {
+                let dest = self.media_path(song_id);
+                let tmp = dest.with_extension("tmp");
+
+                let mut child = tokio::process::Command::new(&exec.cmd[0])
+                    .args(&exec.cmd[1..])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn: {e}")))?;
+
+                let stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "no stdout"))?;
+
+                let mut writer = tokio::io::BufWriter::new(
+                    tokio::fs::File::create(&tmp).await?,
+                );
+                use tokio::io::AsyncWriteExt;
+                use tokio::io::AsyncReadExt;
+                let mut reader = tokio::io::BufReader::new(stdout);
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut total: u64 = 0;
+                loop {
+                    let n = reader.read(&mut buf).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    writer.write_all(&buf[..n]).await?;
+                    total += n as u64;
+                }
+                writer.flush().await?;
+                drop(reader);
+                let _ = child.wait().await;
+
+                use std::time::SystemTime;
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let entry = CacheEntry {
+                    song_id: song_id.clone(),
+                    path: dest.clone(),
+                    size: total,
+                    source: id.clone(),
+                    last_used: now,
+                    valid: true,
+                };
+                self.db
+                    .upsert_cache_entry(&entry)
+                    .await
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+                std::fs::rename(&tmp, &dest)?;
+                Ok(dest)
+            }
+        }
+    }
+
     /// Mark a cache entry as invalid (stale or corrupted).
     /// Does not delete the file — the eviction cycle handles that.
     pub async fn invalidate(&self, song_id: &SongId) {

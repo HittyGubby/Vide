@@ -1,13 +1,21 @@
 <script lang="ts">
   import { Repeat, ListMusic, Shuffle } from "lucide-svelte";
+  import { player } from "$lib/stores/player.svelte";
 
   let open = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  // Three independent togglers combine into 8 possible modes.
-  let single = $state(false);     // false=列表, true=单曲
-  let reverse = $state(false);    // false=顺序, true=逆序
-  let loop = $state(true);        // false=播完暂停, true=循环
+  // Bind to the shared player store; the Rust backend owns sequencing.
+  let single = $derived(player.playMode.single);
+  let reverse = $derived(player.playMode.reverse);
+  let shuffle = $derived(player.playMode.shuffle);
+  let repeat = $derived(player.playMode.repeat);
+
+  function setMode(patch: Partial<{ single: boolean; reverse: boolean; shuffle: boolean; repeat: boolean }>) {
+    player.playMode = { ...player.playMode, ...patch };
+    // Push the new mode to the Rust backend immediately.
+    player.syncPlayMode();
+  }
 
   function enter() {
     clearTimeout(timer);
@@ -19,8 +27,8 @@
 
   let modeName = $derived.by(() => {
     const scope = single ? "单曲" : "列表";
-    const order = reverse ? "逆序" : "顺序";
-    const tail = loop ? "循环" : "不循环";
+    const order = shuffle ? "随机" : reverse ? "逆序" : "按序";
+    const tail = repeat ? "循环" : "不循环";
     return scope + " / " + order + " / " + tail;
   });
 </script>
@@ -38,26 +46,37 @@
       <div class="toggle-row">
         <span class="toggle-label">单曲 / 列表</span>
         <span class="seg">
-          <button class="seg-btn" class:on={single} onclick={() => (single = true)}>单曲</button>
-          <button class="seg-btn" class:on={!single} onclick={() => (single = false)}>列表</button>
+          <button class="seg-btn" class:on={single} onclick={() => setMode({ single: true })}>单曲</button>
+          <button class="seg-btn" class:on={!single} onclick={() => setMode({ single: false })}>列表</button>
         </span>
       </div>
 
-      <!-- Toggler 2: 顺序 / 逆序 -->
+      <!-- Toggler 2: 按序 / 随机 -->
+      <div class="toggle-row">
+        <span class="toggle-label">按序 / 随机</span>
+        <span class="seg">
+          <button class="seg-btn" class:on={!shuffle} onclick={() => setMode({ shuffle: false, reverse: false })}>按序</button>
+          <button class="seg-btn" class:on={shuffle} onclick={() => setMode({ shuffle: true })}>随机</button>
+        </span>
+      </div>
+
+      <!-- Toggler 3: 顺序 / 逆序 (only relevant in order mode) -->
+      {#if !shuffle}
       <div class="toggle-row">
         <span class="toggle-label">顺序 / 逆序</span>
         <span class="seg">
-          <button class="seg-btn" class:on={!reverse} onclick={() => (reverse = false)}>顺序</button>
-          <button class="seg-btn" class:on={reverse} onclick={() => (reverse = true)}>逆序</button>
+          <button class="seg-btn" class:on={!reverse} onclick={() => setMode({ reverse: false })}>顺序</button>
+          <button class="seg-btn" class:on={reverse} onclick={() => setMode({ reverse: true })}>逆序</button>
         </span>
       </div>
+      {/if}
 
-      <!-- Toggler 3: 播完暂停 / 循环 -->
+      <!-- Toggler 4: 播完暂停 / 循环 -->
       <div class="toggle-row">
         <span class="toggle-label">播完暂停 / 循环</span>
         <span class="seg">
-          <button class="seg-btn" class:on={!loop} onclick={() => (loop = false)}>暂停</button>
-          <button class="seg-btn" class:on={loop} onclick={() => (loop = true)}>循环</button>
+          <button class="seg-btn" class:on={!repeat} onclick={() => setMode({ repeat: false })}>暂停</button>
+          <button class="seg-btn" class:on={repeat} onclick={() => setMode({ repeat: true })}>循环</button>
         </span>
       </div>
     </div>

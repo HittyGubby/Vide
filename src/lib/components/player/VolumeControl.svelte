@@ -1,10 +1,13 @@
 <script lang="ts">
   import { Volume2, VolumeX } from "lucide-svelte";
+  import { player } from "$lib/stores/player.svelte";
 
   let open = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let volume = $state(80);
-  let muted = $state(false);
+
+  // Bind to the shared player store so volume/mute actually reach mpv.
+  let volume = $derived(player.volume);
+  let muted = $derived(player.muted);
 
   function enter() {
     clearTimeout(timer);
@@ -14,7 +17,10 @@
     timer = setTimeout(() => (open = false), 150);
   }
   function toggleMute() {
-    muted = !muted;
+    void player.setMuted(!muted);
+  }
+  function onVolume(v: number) {
+    void player.setVolume(v);
   }
 </script>
 
@@ -40,7 +46,8 @@
         type="range"
         min="0"
         max="100"
-        bind:value={volume}
+        value={volume}
+        oninput={(e) => onVolume(parseFloat((e.currentTarget as HTMLInputElement).value))}
         class="vol-slider"
         aria-label="音量"
       />

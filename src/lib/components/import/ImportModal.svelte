@@ -52,14 +52,23 @@
     urlImporting = true;
     urlResult = null;
 
-    // Placeholder for online import
-    setTimeout(() => {
+    try {
+      const playlist = await invoke("import_playlist_url", { url: trimmed });
+      const n = (playlist as any)?.entries?.length ?? 0;
+      urlResult = {
+        success: true,
+        message: "已导入在线播放列表（" + n + " 首）",
+      };
+      url = "";
+    } catch (e) {
+      console.error("url import error:", e);
       urlResult = {
         success: false,
-        message: "在线导入功能即将支持（需要插件系统）",
+        message: String(e),
       };
+    } finally {
       urlImporting = false;
-    }, 500);
+    }
   }
 </script>
 

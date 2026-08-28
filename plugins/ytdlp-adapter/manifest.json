@@ -8,6 +8,8 @@
     { "type": "metadata", "platform": "youtube" },
     { "type": "metadata", "platform": "bilibili" },
     { "type": "stream", "platform": "youtube" },
-    { "type": "stream", "platform": "bilibili" }
+    { "type": "stream", "platform": "bilibili" },
+    { "type": "playlist", "platform": "youtube" },
+    { "type": "playlist", "platform": "bilibili" }
   ]
 }

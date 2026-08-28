@@ -57,6 +57,9 @@ async fn ensure_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
 // ── Database ──────────────────────────────────────────────────────
 
 /// Database wrapper providing an async SQLite connection via SeaORM.
+/// `Clone` shares the underlying SeaORM connection pool (which is itself
+/// an `Arc`), so cloning is cheap and safe.
+#[derive(Clone)]
 pub struct Database {
     pub(crate) conn: DatabaseConnection,
 }
@@ -170,6 +173,56 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    /// Delete every song that has at least one local path.
+    ///
+    /// Used by the full-reshuffle library scan: the scan *replaces* the local
+    /// result set rather than merging with stale entries, so songs that no
+    /// longer exist on disk are removed too. Online-only songs (imported) are
+    /// kept.
+    pub async fn clear_local_songs(&self) -> Result<u64, DbErr> {
+        use entity::{song, song_path, song_source, tag, cache_entry, playlist_entry};
+
+        // Collect the ids that have a local path.
+        let rows = song_path::Entity::find()
+            .select_only()
+            .column(song_path::Column::SongId)
+            .into_tuple::<String>()
+            .all(&self.conn)
+            .await?;
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let ids: Vec<String> = rows;
+        for id in &ids {
+            song_path::Entity::delete_many()
+                .filter(song_path::Column::SongId.eq(id))
+                .exec(&self.conn)
+                .await?;
+            song_source::Entity::delete_many()
+                .filter(song_source::Column::SongId.eq(id))
+                .exec(&self.conn)
+                .await?;
+            tag::Entity::delete_many()
+                .filter(tag::Column::SongId.eq(id))
+                .exec(&self.conn)
+                .await?;
+            cache_entry::Entity::delete_many()
+                .filter(cache_entry::Column::SongId.eq(id))
+                .exec(&self.conn)
+                .await?;
+            playlist_entry::Entity::delete_many()
+                .filter(playlist_entry::Column::SongId.eq(id))
+                .exec(&self.conn)
+                .await?;
+            song::Entity::delete_many()
+                .filter(song::Column::SongId.eq(id))
+                .exec(&self.conn)
+                .await?;
+        }
+        Ok(ids.len() as u64)
     }
 
     /// Retrieve a single song by ID, returning None if not found.
@@ -369,6 +422,9 @@ impl Database {
             PlaylistSource::M3U { file_path } => {
                 ("M3U".to_string(), Some(file_path.to_string_lossy().to_string()))
             }
+            PlaylistSource::Online { url } => {
+                ("Online".to_string(), Some(url.clone()))
+            }
             PlaylistSource::UserCreated => ("UserCreated".to_string(), None),
         };
 
@@ -438,6 +494,9 @@ impl Database {
             "M3U" => PlaylistSource::M3U {
                 file_path: db_pl.source_path.map(std::path::PathBuf::from).unwrap_or_default(),
             },
+            "Online" => PlaylistSource::Online {
+                url: db_pl.source_path.clone().unwrap_or_default(),
+            },
             _ => PlaylistSource::UserCreated,
         };
 
@@ -468,6 +527,9 @@ impl Database {
                             .source_path
                             .map(std::path::PathBuf::from)
                             .unwrap_or_default(),
+                    },
+                    "Online" => PlaylistSource::Online {
+                        url: db_pl.source_path.clone().unwrap_or_default(),
                     },
                     _ => PlaylistSource::UserCreated,
                 };

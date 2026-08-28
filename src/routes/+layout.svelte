@@ -20,15 +20,39 @@
     if (settingsLoaded) return;
     settingsStore.load().then(async () => {
       settingsLoaded = true;
-      // "启动时自动播放音乐": resume the last-played song at its saved position.
-      if (settingsStore.settings.auto_play_on_start) {
-        const last = await player.getLastPlayed();
-        if (last && last.songId) {
+      // Always restore the last-played song's identity & position so the UI
+      // reflects where the user left off even without auto-play.
+      const last = await player.getLastPlayed();
+      if (last && last.songId) {
+        try {
+          const song = await invoke<{
+            id: string;
+            title: string;
+            artist: string;
+            album: string;
+            metadata?: { display_title?: string; artist_override?: string };
+          }>("get_song", { id: last.songId });
+          if (song) {
+            player.mediaId = last.songId;
+            player.title = song.metadata?.display_title ?? song.title;
+            player.artist = song.metadata?.artist_override ?? song.artist;
+            player.album = song.album ?? "";
+            player.elapsed = last.position;
+            // Remember the resume position so pressing play seeks there.
+            player._pendingSeek = last.position;
+          }
+        } catch (e) {
+          console.error("restore last-played song error:", e);
+        }
+
+        // "启动时自动播放音乐": resume playback at the saved position.
+        if (settingsStore.settings.auto_play_on_start) {
           try {
             await invoke("play_song", { id: last.songId });
             if (last.position > 0) {
               await invoke("seek", { positionSecs: last.position });
             }
+            player.isPlaying = true;
           } catch (e) {
             console.error("auto-play resume error:", e);
           }

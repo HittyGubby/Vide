@@ -18,6 +18,8 @@ pub struct PlaylistEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlaylistSource {
     M3U { file_path: PathBuf },
+    /// Imported from an online playlist URL (e.g. a YouTube/Bilibili playlist).
+    Online { url: String },
     UserCreated,
 }
 

@@ -15,6 +15,7 @@
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import VolumeControl from "$lib/components/player/VolumeControl.svelte";
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
+  import SeekBar from "$lib/components/player/SeekBar.svelte";
   import type { Song } from "$lib/types";
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -43,20 +44,16 @@
   });
 
   async function togglePlay() {
-    if (player.isPlaying) {
-      try {
-        await invoke("stop_playback");
-        player.isPlaying = false;
-      } catch (e) {
-        console.error("stop error:", e);
-      }
-    } else if (player.mediaId) {
-      try {
-        await invoke("play_song", { id: player.mediaId });
-        player.isPlaying = true;
-      } catch (e) {
-        console.error("play error:", e);
-      }
+    await player.togglePause();
+  }
+
+  async function seekTrack(targetSecs: number) {
+    if (player.duration <= 0) return;
+    try {
+      await invoke("seek", { positionSecs: targetSecs });
+      player.elapsed = targetSecs;
+    } catch {
+      /* seek not supported in this mode */
     }
   }
 
@@ -79,7 +76,10 @@
     e.preventDefault();
     if (!player.mediaId) return;
     ui.showPlayerDetail = false;
-    goto("/?locate=" + encodeURIComponent(player.mediaId) + "&preset=all");
+    // Navigate to the library view, then signal the locate via a monotonic
+    // counter so repeated right-clicks on the same song always work.
+    void goto("/");
+    player.requestLocate(player.mediaId);
   }
 
   // ── Lyrics line (bottom-left) ────────────────────
@@ -140,6 +140,21 @@
 </script>
 
 <footer class="playerbar">
+  <!-- Full-width progress strip pinned to the top of the player bar -->
+  {#if player.mediaId && player.duration > 0}
+    <div class="full-progress">
+      <SeekBar
+        elapsed={player.elapsed}
+        duration={player.duration}
+        playing={player.isPlaying}
+        speed={player.speed}
+        heightPx={2}
+        knob={true}
+        onseek={seekTrack}
+      />
+    </div>
+  {/if}
+
   <div class="player-left" oncontextmenu={locateCurrentSong}>
     <button class="album-art" onclick={openDetail} title="播放详情" aria-label="播放详情">
       {#if player.cover}
@@ -154,6 +169,9 @@
       <div class="info-sub truncate">
         {#if subtitle}
           <span class="lyric-text">{subtitle}</span>
+        {:else if player.mediaId}
+          <!-- A song is loaded but has no lyrics/artist — keep it blank. -->
+          <span class="idle-text" style="visibility: hidden">&nbsp;</span>
         {:else}
           <span class="idle-text">选择一首歌曲开始播放</span>
         {/if}
@@ -179,7 +197,7 @@
   </div>
 
   <div class="play-controls">
-    <button class="ctrl-btn skip" title="上一首" aria-label="上一首" disabled>
+    <button class="ctrl-btn skip" title="上一首" aria-label="上一首" onclick={() => player.playPrev()}>
       <SkipBack size={18} />
     </button>
     <button class="ctrl-btn play-btn" onclick={togglePlay} aria-label="播放/暂停">
@@ -189,7 +207,7 @@
         <Play size={20} fill="currentColor" />
       {/if}
     </button>
-    <button class="ctrl-btn skip" title="下一首" aria-label="下一首" disabled>
+    <button class="ctrl-btn skip" title="下一首" aria-label="下一首" onclick={() => player.playNext()}>
       <SkipForward size={18} />
     </button>
   </div>
@@ -201,6 +219,7 @@
 
 <style>
   .playerbar {
+    position: relative;
     display: flex;
     align-items: center;
     height: var(--playerbar-height);
@@ -210,6 +229,22 @@
     gap: 12px;
     user-select: none;
     flex-shrink: 0;
+  }
+
+  /* Slim full-width progress strip pinned to the very top of the bar. */
+  .full-progress {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1;
+  }
+  .full-progress :global(.seekbar) {
+    border-radius: 0;
+    background: transparent;
+  }
+  .full-progress :global(.seek-track) {
+    border-radius: 0;
   }
 
   .player-left {

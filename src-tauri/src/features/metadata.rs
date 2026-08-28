@@ -59,6 +59,14 @@ pub fn extract_file_metadata(path: &Path) -> Result<SongMetadata, MetadataError>
         metadata.title = tag.title().map(|s| s.to_string());
         metadata.artist = tag.artist().map(|s| s.to_string());
         metadata.album = tag.album().map(|s| s.to_string());
+
+        // Embedded lyrics (ID3 USLT / Vorbis LYRICS / MP4 ©lyr)
+        use lofty::tag::ItemKey;
+        if let Some(lyrics) = tag.get_string(&ItemKey::Lyrics) {
+            if !lyrics.trim().is_empty() {
+                metadata.lyrics = Some(lyrics.to_string());
+            }
+        }
     }
 
     // File name fallback for title

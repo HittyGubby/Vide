@@ -168,6 +168,30 @@ impl PluginManager {
         serde_json::from_value(value).map_err(|e| format!("invalid resolve result: {e}"))
     }
 
+    /// Resolve the entries of an online playlist URL via the plugin.
+    ///
+    /// The platform is unknown up front, so we use the first registered
+    /// provider that supports the platform-agnostic `playlist` capability.
+    pub async fn playlist(&self, url: &str) -> Result<Vec<SearchResultItem>, String> {
+        let (_platform, entry) = self
+            .router
+            .get_any_capability("playlist")
+            .ok_or_else(|| "no playlist provider registered".to_string())?;
+
+        let manifest = self
+            .find_manifest(&entry.plugin_name)
+            .ok_or_else(|| format!("manifest not found for '{}'", entry.plugin_name))?;
+        self.runtime.ensure_running(manifest).await?;
+
+        let params = serde_json::json!({ "url": url });
+        let value = self
+            .runtime
+            .send_request(&entry.plugin_name, "playlist", params)
+            .await?;
+
+        serde_json::from_value(value).map_err(|e| format!("invalid playlist result: {e}"))
+    }
+
     /// Get a playable stream descriptor for a platform song.
     pub async fn stream(
         &self,

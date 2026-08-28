@@ -10,7 +10,239 @@ class PlayerStore {
   elapsed = $state(0);
   duration = $state(0);
   isPlaying = $state(false);
+  speed = $state(1.0);
+  volume = $state(80);
+  muted = $state(false);
+
+  /** Set playback volume (0..=100) and persist to the backend (mpv). */
+  async setVolume(v: number) {
+    this.volume = Math.max(0, Math.min(100, Math.round(v)));
+    if (this.volume > 0) this.muted = false;
+    try {
+      await invoke("set_volume", { volume: this.volume });
+    } catch (e) {
+      console.error("set_volume error:", e);
+    }
+  }
+
+  /** Mute / unmute playback. */
+  async setMuted(m: boolean) {
+    this.muted = m;
+    try {
+      await invoke("set_mute", { muted: m });
+    } catch (e) {
+      console.error("set_mute error:", e);
+    }
+  }
+
+  /** Set playback speed (rate) — persists to the backend too. */
+  async setSpeed(rx: number) {
+    this.speed = rx;
+    try {
+      await invoke("set_speed", { speed: rx });
+    } catch (e) {
+      console.error("set_speed error:", e);
+    }
+  }
+
+  // ── Playback queue / order ─────────────────────────
+  // The current playlist and the index of the actively playing song.
+  queue = $state<{ id: string; title: string; artist: string; album: string }[]>([]);
+  currentIndex = $state(-1);
+
+  // Play order mode — mirrors the Rust PlayMode and is pushed to the backend.
+  playMode = $state<{ single: boolean; reverse: boolean; shuffle: boolean; repeat: boolean }>({
+    single: false,   // false = play list, true = repeat one
+    reverse: false,  // false = forward, true = reverse
+    shuffle: false,  // false = in order, true = random
+    repeat: true,    // false = stop after list, true = loop
+  });
+
+  /** Push the current play mode to the Rust backend (which owns sequencing). */
+  syncPlayMode() {
+    try {
+      void invoke("set_play_mode", { mode: { ...this.playMode } });
+    } catch (e) {
+      console.error("set_play_mode error:", e);
+    }
+  }
+  // Tracks already played in the current shuffle round (reset when exhausted).
+  _shufflePlayed = new Set<string>();
+  resetShuffle() { this._shufflePlayed = new Set<string>(); }
+
+  // Monotonic request id used by the player bar's "locate current song" action.
+  // Using a plain counter (instead of a URL query) means repeated right-clicks
+  // on the same song always fire, because the id changes every time.
+  locateRequestId = $state(0);
+  locateSongId = $state<string | null>(null);
+  requestLocate(songId: string) {
+    this.locateSongId = songId;
+    this.locateRequestId++;
+  }
+
   _saveTick = 0;
+  // If set, the next play should seek to this position (startup restore).
+  _pendingSeek = 0;
+
+  /** Set the active queue (the list the user is playing from) and register it
+   * on the Rust backend, which owns all sequencing. */
+  async setQueue(items: { id: string; title: string; artist: string; album: string }[]) {
+    this.queue = items;
+    this.currentIndex = items.findIndex((i) => i.id === this.mediaId);
+    try {
+      await invoke("set_play_queue", {
+        ids: items.map((i) => i.id),
+        startIndex: this.currentIndex,
+      });
+    } catch (e) {
+      console.error("set_play_queue error:", e);
+    }
+  }
+
+  /** Register the queue and start playing `id`, all owned by the backend. */
+  async playFromList(items: { id: string; title: string; artist: string; album: string }[], id: string) {
+    this.queue = items;
+    this.currentIndex = items.findIndex((i) => i.id === id);
+    const idx = this.currentIndex;
+    try {
+      // Tell the backend the queue and which index to start playing.
+      await invoke("set_play_queue", {
+        ids: items.map((i) => i.id),
+        startIndex: idx,
+      });
+      this.isPlaying = true;
+    } catch (e) {
+      console.error("set_play_queue error:", e);
+    }
+  }
+
+  /** Toggle play/pause without discarding the current song.
+   * Unlike the old stop_playback path, this keeps mediaId/title/artist so
+   * the player bar and detail page are not reset when pausing. */
+  async togglePause() {
+    try {
+      const status = await invoke<{
+        state: string;
+        media_id?: string;
+        elapsed_secs?: number;
+        duration_secs?: number;
+      }>("toggle_pause");
+      // If the backend has no live playback (e.g. restored on startup but not
+      // actually playing), a plain toggle is a no-op. In that case start the
+      // remembered song, resuming at the stored position if we have one.
+      if (status.state === "Stopped" && this.mediaId) {
+        // playId passes _pendingSeek to the backend, which seeks there once
+        // mpv is ready — so a startup resume lands at the saved position.
+        await this.playId(this.mediaId);
+        return;
+      }
+      this.isPlaying = status.state === "Playing";
+      this.elapsed = status.elapsed_secs ?? this.elapsed;
+      this.duration = status.duration_secs ?? this.duration;
+      if (status.media_id) this.mediaId = status.media_id;
+    } catch (e) {
+      console.error("toggle_pause error:", e);
+    }
+  }
+
+  /** Legitimately stop (deselect) the current song. */
+  async stop() {
+    try {
+      await invoke("stop_playback");
+      this.isPlaying = false;
+      this.mediaId = null;
+      this.cover = null;
+      this.title = "未在播放";
+      this.artist = "选择一首歌曲开始播放";
+      this.duration = 0;
+      this.elapsed = 0;
+    } catch (e) {
+      console.error("stop error:", e);
+    }
+  }
+
+  /** Play the next song — sequencing is decided by the Rust backend. */
+  async playNext(auto = false): Promise<boolean> {
+    try {
+      const status = await invoke<{
+        state: string;
+        media_id?: string;
+        elapsed_secs?: number;
+        duration_secs?: number;
+      }>("play_next");
+      await this._syncStatus(status);
+      return true;
+    } catch (e) {
+      console.error("play_next error:", e);
+      return false;
+    }
+  }
+
+  /** Play the previous song — sequencing handled by the backend. */
+  async playPrev(): Promise<boolean> {
+    try {
+      const status = await invoke<{
+        state: string;
+        media_id?: string;
+        elapsed_secs?: number;
+        duration_secs?: number;
+      }>("play_prev");
+      await this._syncStatus(status);
+      return true;
+    } catch (e) {
+      console.error("play_prev error:", e);
+      return false;
+    }
+  }
+
+  /** Play a specific song id (tells the backend to play it immediately). */
+  async playId(id: string) {
+    try {
+      const status = await invoke<{
+        state: string;
+        media_id?: string;
+        elapsed_secs?: number;
+        duration_secs?: number;
+      }>("play_song", { id, positionSecs: this._pendingSeek > 0 ? this._pendingSeek : null });
+      // Backend resumes at the saved position; clear it once used.
+      this._pendingSeek = 0;
+      await this._syncStatus(status);
+    } catch (e) {
+      console.error("play error:", e);
+    }
+  }
+
+  /** Apply a backend status snapshot to this store. */
+  async _syncStatus(status: { state: string; media_id?: string; elapsed_secs?: number; duration_secs?: number }) {
+    this.isPlaying = status.state === "Playing";
+    this.elapsed = status.elapsed_secs ?? this.elapsed;
+    this.duration = status.duration_secs ?? this.duration;
+    const newId = status.media_id ?? null;
+    if (newId && newId !== this.mediaId) {
+      this.mediaId = newId;
+      // Fetch song details so the player bar updates when the track changes.
+      try {
+        const song = await invoke<{
+          title: string;
+          artist: string;
+          album: string;
+          metadata?: { display_title?: string; artist_override?: string; album?: string };
+        }>("get_song", { id: newId });
+        if (song) {
+          this.title = song.metadata?.display_title ?? song.title;
+          this.artist = song.metadata?.artist_override ?? song.artist;
+          this.album = song.metadata?.album ?? song.album ?? "";
+          this.cover = null;
+        }
+      } catch {
+        /* not fatal */
+      }
+    } else if (newId) {
+      this.mediaId = newId;
+    }
+    // Refresh the queued index for the media id.
+    this.currentIndex = this.queue.findIndex((i) => i.id === this.mediaId);
+  }
 
   /** Save the current song id + position (throttled) so we can resume. */
   async saveProgress() {
@@ -56,10 +288,18 @@ class PlayerStore {
       this.elapsed = status.elapsed_secs ?? 0;
       this.duration = status.duration_secs ?? 0;
 
+      // The media finished naturally — advance to the next track per the
+      // current play mode. Backend keeps media_id while in Ended state.
+      if (status.state === "Ended") {
+        void this.playNext(true);
+      }
+
       const newId = status.media_id ?? null;
       // Remember progress while playing (save ~every 5 seconds of position change).
       this._saveTick = (this._saveTick ?? 0) + 1;
-      if (this.isPlaying && this._saveTick % 5 === 0) {
+      // Save the last-played song + position every ~2s while playing so a
+      // restart can restore precisely where the user left off.
+      if (this.isPlaying && this._saveTick % 2 === 0) {
         void this.saveProgress();
       }
 
@@ -84,20 +324,25 @@ class PlayerStore {
             this.title = song.metadata?.display_title ?? song.title;
             this.artist = song.metadata?.artist_override ?? song.artist;
             this.album = song.metadata?.album ?? song.album ?? "";
-            // A local file can double as the cover placeholder (monogram is
-            // shown when no artwork/cover is available).
-            this.cover = song.paths[0] ?? null;
+            // NOTE: a local media file path must NOT be used as an <img src> —
+            // the webview would request it from the dev server and get a 404.
+            // Only real cover art (a data: URI or an image file) is valid here.
+            // Until cover art is resolved, leave it null so the monogram shows.
+            this.cover = null;
           }
         } catch {
           this.title = "Unknown";
           this.artist = "Unknown";
         }
       } else if (!newId) {
+        // Only reset to the idle "nothing selected" state when the backend
+        // reports no media loaded (i.e. a real stop, not a pause).
         this.mediaId = null;
-        if (!this.isPlaying) {
-          this.title = "未在播放";
-          this.artist = "选择一首歌曲开始播放";
-        }
+        this.cover = null;
+        this.title = "未在播放";
+        this.artist = "选择一首歌曲开始播放";
+        this.duration = 0;
+        this.elapsed = 0;
       }
     } catch {
       /* backend not ready yet */

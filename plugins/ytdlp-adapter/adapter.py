@@ -117,6 +117,48 @@ def handle_stream(params):
     }
 
 
+def handle_playlist(params):
+    """解析一个在线播放列表 URL，返回其中的条目列表。
+
+    params: { "url": "https://www.youtube.com/playlist?list=..." }
+    """
+    url = params.get("url", "")
+    if not url:
+        return {"error": "no url"}
+
+    # 用 yt-dlp 扁平化列出播放列表条目 (不拉取每个条目的完整元数据)
+    cmd = YTDLP + ["--flat-playlist", "-J", url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(result.stdout.strip())
+    except subprocess.TimeoutExpired:
+        return {"error": "timeout"}
+    except Exception as e:
+        return {"error": str(e)}
+
+    entries = data.get("entries", []) if isinstance(data, dict) else []
+    items = []
+    for ent in entries:
+        if not isinstance(ent, dict):
+            continue
+        eid = ent.get("id", "")
+        if not eid:
+            continue
+        items.append({
+            "platform": ent.get("extractor_key", "").lower(),
+            "id": eid,
+            "title": ent.get("title", "Unknown"),
+            "artist": ent.get("channel", ent.get("uploader", "")),
+            "duration": ent.get("duration"),
+        })
+    return items
+
+
+def handle_lyrics(params):
+    """获取歌词（当前仓库内暂无独立歌词源；返回空列表表示无歌词）。"""
+    return []
+
+
 def main():
     """主循环：读取 stdin 的 JSON lines，处理请求，写入 stdout。"""
     for line in sys.stdin:
@@ -140,6 +182,10 @@ def main():
             result = handle_resolve(params)
         elif action == "stream":
             result = handle_stream(params)
+        elif action == "playlist":
+            result = handle_playlist(params)
+        elif action == "lyrics":
+            result = handle_lyrics(params)
         else:
             response = {"id": req_id, "error": "not_supported"}
             print(json.dumps(response), flush=True)

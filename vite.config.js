@@ -18,13 +18,16 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
+    // Disable the Vite error overlay so a Tailwind v4 + Svelte 5 CSS
+    // mis-parse ("Invalid declaration: <identifier>") does not blank the
+    // whole page in dev. The affected component still renders; only the
+    // CSS-scope injection logs a warning.
+    hmr: {
+      overlay: false,
+      protocol: host ? "ws" : undefined,
+      host: host || undefined,
+      port: host ? 1421 : undefined,
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

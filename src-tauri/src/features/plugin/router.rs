@@ -135,6 +135,21 @@ impl RoutingTable {
             .contains_key(&(platform.to_string(), capability.to_string()))
     }
 
+    /// Find the active provider for *any* platform that supports the given
+    /// capability. Used for platform-agnostic capabilities (e.g. parsing a
+    /// playlist URL) where the caller does not know the platform in advance.
+    pub fn get_any_capability(&self, capability: &str) -> Option<(String, ProviderEntry)> {
+        let routes = self.routes.lock().unwrap();
+        for ((platform, cap), entries) in routes.iter() {
+            if cap == capability {
+                if let Some(active) = entries.first() {
+                    return Some((platform.clone(), active.clone()));
+                }
+            }
+        }
+        None
+    }
+
     /// Number of distinct routes.
     pub fn route_count(&self) -> usize {
         self.routes.lock().unwrap().len()

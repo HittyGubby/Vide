@@ -164,6 +164,68 @@ pub async fn clear_song_cache(
     Ok(entries.len() as u64)
 }
 
+/// Download an online song's stream into the local cache and register the
+/// cached file as a local path for the song, so it becomes playable offline
+/// (i.e. it joins the local library). Returns the number of paths now on the
+/// song (0 for already-local songs, >=1 after a successful download).
+#[tauri::command]
+pub async fn download_song(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<u64, String> {
+    let song_id = SongId(id.clone());
+    let song = state
+        .db
+        .get_song(&song_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "song not found".to_string())?;
+
+    // Already a local file — nothing to download.
+    if !song.paths.is_empty() {
+        return Ok(song.paths.len() as u64);
+    }
+
+    // Need a plugin stream descriptor to know what to fetch.
+    let (platform, source_id) = song
+        .sources
+        .first()
+        .map(|s| (s.platform.clone(), s.id.clone()))
+        .ok_or_else(|| "no online source to download".to_string())?;
+
+    let plugins = state
+        .plugins
+        .as_ref()
+        .ok_or_else(|| "plugin system not available".to_string())?;
+    let descriptor = plugins.stream(&platform, &source_id, &id).await?;
+
+    // Build a CacheManager rooted in the app data directory.
+    let data_dir = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let basic_dir = data_dir.join("vide");
+    let cache = crate::features::cache::CacheManager::new(
+        state.db.as_ref().clone(),
+        &basic_dir,
+    )
+    .await
+    .map_err(|e| format!("cache init: {e}"))?;
+
+    let cached_path = cache
+        .download_from_descriptor(&song_id, &descriptor)
+        .await
+        .map_err(|e| format!("download: {e}"))?;
+
+    // Register the cached file as a local path (dedupe).
+    let mut song = song;
+    song.paths.push(cached_path);
+    state
+        .db
+        .upsert_song(&song)
+        .await
+        .map_err(|e| format!("save song: {e}"))?;
+
+    Ok(song.paths.len() as u64)
+}
+
 #[tauri::command]
 pub async fn search_songs(
     state: tauri::State<'_, AppState>,
@@ -176,6 +238,15 @@ pub async fn search_songs(
 pub async fn scan_library(state: tauri::State<'_, AppState>) -> Result<ScanResult, String> {
     let config = state.config.lock().await;
     let mut total = ScanResult::default();
+
+    // Full re-scan semantics: replace the previous local result set instead of
+    // merging with stale entries, so songs that no longer exist are dropped.
+    let cleared = state
+        .db
+        .clear_local_songs()
+        .await
+        .map_err(|e| e.to_string())?;
+    total.skipped += cleared;
 
     for root in &config.library_roots {
         let result = crate::features::library::scan_root(&*state.db, root).await;
@@ -193,8 +264,33 @@ pub async fn scan_library(state: tauri::State<'_, AppState>) -> Result<ScanResul
 
 #[tauri::command]
 pub async fn get_player_status(state: tauri::State<'_, AppState>) -> Result<PlaybackStatus, String> {
-    let player = state.player.lock().await;
-    Ok(player.status())
+    let mut player = state.player.lock().await;
+    // Detect a natural end (mpv exited on its own) so the frontend can
+    // advance the queue, then pull duration/progress so the UI shows real
+    // track length instead of 0:00.
+    player.check_alive().await;
+    player.refresh().await;
+    let mut status = player.status();
+
+    // If nothing is actually loaded but we remember a last-played song, report
+    // it as a paused/memory state so the UI keeps showing where the user left
+    // off instead of being reset to idle by the frontend poll.
+    if status.media_id.is_none() {
+        if let Ok(Some((song_id, position))) = state.db.load_last_played().await {
+            if !song_id.is_empty() {
+                status.media_id = Some(song_id.clone());
+                status.elapsed_secs = Some(position);
+                // Also report the known duration so the UI isn't stuck at 0:00.
+                if let Ok(Some(song)) = state.db.get_song(&SongId(song_id)).await {
+                    if let Some(d) = song.metadata.duration {
+                        status.duration_secs = Some(d);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -216,6 +312,21 @@ pub async fn get_lyrics(
         }
     }
 
+    // For a local file, re-read the embedded lyrics tag (e.g. ID3 USLT),
+    // cache it on the song, and return it.
+    if let Some(path) = song.paths.first() {
+        if let Ok(file_meta) = crate::features::metadata::extract_file_metadata(path) {
+            if let Some(lyrics) = &file_meta.lyrics {
+                if !lyrics.is_empty() {
+                    let mut song = song;
+                    song.metadata.lyrics = Some(lyrics.clone());
+                    let _ = state.db.upsert_song(&song).await;
+                    return Ok(Some(lyrics.clone()));
+                }
+            }
+        }
+    }
+
     // Plugin lyrics capability (future use)
     // if let Some(plugins) = state.plugins.as_ref() {
     //     if let Some(source) = song.sources.first() {
@@ -230,40 +341,65 @@ pub async fn get_lyrics(
 pub async fn play_song(
     state: tauri::State<'_, AppState>,
     id: String,
+    position_secs: Option<f64>,
 ) -> Result<PlaybackStatus, String> {
-    let song = state
-        .db
-        .get_song(&SongId(id.clone()))
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "song not found".to_string())?;
-
-    let descriptor = if let Some(path) = song.paths.first() {
-        // Local file — play directly
-        crate::features::plugin::types::StreamDescriptor::UrlStream {
-            id,
-            url: path.to_string_lossy().to_string(),
-            headers: None,
-        }
-    } else if let Some(source) = song.sources.first() {
-        // Online source — resolve stream via plugin
-        let plugins = state
-            .plugins
-            .as_ref()
-            .ok_or_else(|| "plugin system not available".to_string())?;
-        plugins.stream(&source.platform, &source.id, &id).await?
-    } else {
-        return Err("no playable source found".to_string());
-    };
-
     let mut player = state.player.lock().await;
-    player.play(&descriptor).await
+    player.play_song_id(&id, position_secs).await
+}
+
+/// Set the playback queue and optionally start playing at `start_index`
+/// (index of the song to play, or -1 to just store the queue).
+#[tauri::command]
+pub async fn set_play_queue(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<String>,
+    start_index: i64,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.set_queue(ids, start_index as isize).await
+}
+
+/// Play the next song in the queue (as decided by Rust).
+#[tauri::command]
+pub async fn play_next(
+    state: tauri::State<'_, AppState>,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.play_next().await
+}
+
+/// Play the previous song in the queue.
+#[tauri::command]
+pub async fn play_prev(
+    state: tauri::State<'_, AppState>,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.play_prev().await
+}
+
+/// Set the play order mode (single / reverse / shuffle / loop).
+#[tauri::command]
+pub async fn set_play_mode(
+    state: tauri::State<'_, AppState>,
+    mode: crate::features::player::PlayMode,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.set_play_mode(mode);
+    Ok(player.status())
 }
 
 #[tauri::command]
 pub async fn stop_playback(state: tauri::State<'_, AppState>) -> Result<PlaybackStatus, String> {
     let mut player = state.player.lock().await;
     Ok(player.stop().await)
+}
+
+/// Toggle between playing and paused. Unlike stop, this keeps the current
+/// song loaded so the UI (title/artist/detail page) is NOT reset.
+#[tauri::command]
+pub async fn toggle_pause(state: tauri::State<'_, AppState>) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.toggle_pause().await
 }
 
 #[tauri::command]
@@ -273,6 +409,39 @@ pub async fn seek(
 ) -> Result<PlaybackStatus, String> {
     let mut player = state.player.lock().await;
     player.seek(position_secs).await?;
+    Ok(player.status())
+}
+
+/// Set playback speed (rate). 1.0 = normal.
+#[tauri::command]
+pub async fn set_speed(
+    state: tauri::State<'_, AppState>,
+    speed: f64,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.set_speed(speed).await?;
+    Ok(player.status())
+}
+
+/// Set playback volume (0..=100).
+#[tauri::command]
+pub async fn set_volume(
+    state: tauri::State<'_, AppState>,
+    volume: f64,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.set_volume(volume).await?;
+    Ok(player.status())
+}
+
+/// Mute / unmute playback.
+#[tauri::command]
+pub async fn set_mute(
+    state: tauri::State<'_, AppState>,
+    muted: bool,
+) -> Result<PlaybackStatus, String> {
+    let mut player = state.player.lock().await;
+    player.set_mute(muted).await?;
     Ok(player.status())
 }
 
@@ -362,6 +531,92 @@ pub async fn resolve_song(
         .map_err(|e| e.to_string())?;
 
     Ok(song)
+}
+
+/// Import an online playlist URL (YouTube/Bilibili/etc.) into the library.
+///
+/// Uses the plugin system to resolve the playlist entries, upserts each entry
+/// as a Song in the library, and stores an ordered Playlist referencing them.
+/// Returns the created playlist.
+#[tauri::command]
+pub async fn import_playlist_url(
+    state: tauri::State<'_, AppState>,
+    url: String,
+) -> Result<crate::models::playlist::Playlist, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let plugins = state
+        .plugins
+        .as_ref()
+        .ok_or_else(|| "plugin system not available".to_string())?;
+    let items = plugins.playlist(&url).await?;
+    if items.is_empty() {
+        return Err("playlist is empty or not resolvable".to_string());
+    }
+
+    let mut entries: Vec<crate::models::playlist::PlaylistEntry> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let song_id = crate::infra::hash::song_id_from_source(&item.platform, &item.id);
+
+        // Upsert the song if not already present.
+        if state
+            .db
+            .get_song(&song_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            let title = item.title.clone();
+            let artist = item.artist.clone().unwrap_or_else(|| "Unknown".to_string());
+            let album = item.album.clone().unwrap_or_else(|| "Unknown".to_string());
+            let song = Song {
+                id: song_id.clone(),
+                title,
+                artist,
+                album,
+                tags: Vec::new(),
+                sources: vec![Source {
+                    platform: item.platform.clone(),
+                    id: item.id.clone(),
+                }],
+                paths: Vec::new(),
+                metadata: SongMetadata {
+                    duration: item.duration,
+                    ..Default::default()
+                },
+            };
+            state
+                .db
+                .upsert_song(&song)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        entries.push(crate::models::playlist::PlaylistEntry {
+            song_id,
+            import_order: Some((i + 1) as u32),
+        });
+    }
+
+    // Deterministic playlist id from the URL.
+    let mut hasher = DefaultHasher::new();
+    url.hash(&mut hasher);
+    let name = format!("在线导入 {:x}", hasher.finish()).to_string();
+    let playlist = crate::models::playlist::Playlist {
+        id: crate::models::playlist::PlaylistId(format!("online:{:x}", hasher.finish())),
+        name,
+        entries,
+        source: crate::models::playlist::PlaylistSource::Online { url },
+    };
+
+    state
+        .db
+        .upsert_playlist(&playlist)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(playlist)
 }
 
 // ── Search Presets ───────────────────────────────────────────────
