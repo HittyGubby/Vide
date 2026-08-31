@@ -6,6 +6,10 @@ use crate::features::search::fuzzy::FuzzyMatch;
 use crate::infra::hash::song_id_from_source;
 use crate::models::song::{Song, SongId, SongMetadata, Source};
 use crate::models::tag::{MetaTag, Tag};
+use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+use tauri::Emitter;
+use tracing::warn;
 
 // ── Library ───────────────────────────────────────────────────────
 
@@ -753,6 +757,256 @@ pub async fn get_last_played(
         .load_last_played()
         .await
         .map_err(|e| e.to_string())
+}
+
+// ── Caches ─────────────────────────────────────────────
+
+/// One row of the cache manager list.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheStat {
+    /// Stable id used by `clear_cache_kind`.
+    pub kind: String,
+    pub label: String,
+    /// Number of cached items.
+    pub count: u64,
+    /// Bytes used on disk. `None` for caches that live as text inside SQLite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+fn image_cache_dir() -> PathBuf {
+    crate::app_data_dir().join("cache").join("images")
+}
+
+fn audio_cache_dir() -> PathBuf {
+    crate::app_data_dir().join("cache")
+}
+
+/// Count the files directly inside `dir` and their total size.
+async fn dir_stats(dir: &Path) -> (u64, u64) {
+    let mut count = 0u64;
+    let mut size = 0u64;
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if meta.is_file() {
+                    count += 1;
+                    size += meta.len();
+                }
+            }
+        }
+    }
+    (count, size)
+}
+
+/// Does this metadata blob carry a non-empty lyrics field?
+fn has_lyrics(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("lyrics"))
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Does this metadata blob carry any saved field at all?
+fn has_metadata(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .map(|o| o.values().any(|v| !v.is_null()))
+        .unwrap_or(false)
+}
+
+/// Size and usage of every cache the app keeps.
+#[tauri::command]
+pub async fn get_cache_stats(state: tauri::State<'_, AppState>) -> Result<Vec<CacheStat>, String> {
+    let (image_count, image_size) = dir_stats(&image_cache_dir()).await;
+
+    let entries = state
+        .db
+        .list_cache_entries()
+        .await
+        .map_err(|e| e.to_string())?;
+    // Report what is really on disk; a recorded size can be stale if the
+    // file was removed behind our back.
+    let mut audio_size = 0u64;
+    let mut audio_count = 0u64;
+    for entry in &entries {
+        if let Ok(meta) = tokio::fs::metadata(&entry.path).await {
+            audio_count += 1;
+            audio_size += meta.len();
+        }
+    }
+
+    let blobs = state
+        .db
+        .list_metadata_json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let lyric_count = blobs.iter().filter(|b| has_lyrics(b)).count() as u64;
+    let metadata_count = blobs.iter().filter(|b| has_metadata(b)).count() as u64;
+
+    Ok(vec![
+        CacheStat {
+            kind: "image".to_string(),
+            label: "图片缓存".to_string(),
+            count: image_count,
+            size: Some(image_size),
+        },
+        CacheStat {
+            kind: "audio".to_string(),
+            label: "音频缓存".to_string(),
+            count: audio_count,
+            size: Some(audio_size),
+        },
+        CacheStat {
+            kind: "lyric".to_string(),
+            label: "歌词缓存".to_string(),
+            count: lyric_count,
+            size: None,
+        },
+        CacheStat {
+            kind: "metadata".to_string(),
+            label: "元信息缓存".to_string(),
+            count: metadata_count,
+            size: None,
+        },
+    ])
+}
+
+/// Empty one cache. Returns the number of items that were removed.
+#[tauri::command]
+pub async fn clear_cache_kind(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+) -> Result<u64, String> {
+    match kind.as_str() {
+        "image" => {
+            let dir = image_cache_dir();
+            let (count, _) = dir_stats(&dir).await;
+            let mut removed = 0u64;
+            if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    if tokio::fs::remove_file(entry.path()).await.is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+            Ok(removed.max(count))
+        }
+        "audio" => {
+            let entries = state
+                .db
+                .list_cache_entries()
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut removed = 0u64;
+            for entry in &entries {
+                if tokio::fs::remove_file(&entry.path).await.is_ok() {
+                    removed += 1;
+                }
+            }
+            state
+                .db
+                .delete_all_cache_entries()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(removed)
+        }
+        "lyric" => {
+            let songs = state
+                .db
+                .list_library_songs()
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut removed = 0u64;
+            for song in songs {
+                if song.metadata.lyrics.as_deref().map(str::is_empty) == Some(false) {
+                    let mut updated = song.clone();
+                    updated.metadata.lyrics = None;
+                    state
+                        .db
+                        .upsert_song(&updated)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        }
+        "metadata" => {
+            let songs = state
+                .db
+                .list_library_songs()
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut removed = 0u64;
+            for song in songs {
+                let json = serde_json::to_string(&song.metadata).unwrap_or_default();
+                if !has_metadata(&json) {
+                    continue;
+                }
+                let mut updated = song.clone();
+                updated.metadata = Default::default();
+                state
+                    .db
+                    .upsert_song(&updated)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                removed += 1;
+            }
+            Ok(removed)
+        }
+        other => Err(format!("unknown cache kind: {other}")),
+    }
+}
+
+/// One global shortcut to register: which action it triggers plus the
+/// accelerator string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalShortcutItem {
+    pub action: String,
+    pub accelerator: String,
+}
+
+/// (Re)register the global shortcuts. Previously registered bindings are
+/// dropped first, so this is safe to call whenever the settings change.
+///
+/// Returns the accelerators that could not be registered (badly formed, or
+/// already taken by another application) — an empty list means all succeeded.
+#[tauri::command]
+pub fn set_global_shortcuts(
+    app: tauri::AppHandle,
+    items: Vec<GlobalShortcutItem>,
+) -> Result<Vec<String>, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let manager = app.global_shortcut();
+    manager.unregister_all().map_err(|e| e.to_string())?;
+
+    let mut failures = Vec::new();
+    for item in items {
+        let accelerator = item.accelerator.trim().to_string();
+        if accelerator.is_empty() {
+            continue;
+        }
+        let action = item.action.clone();
+        match manager.on_shortcut(accelerator.as_str(), move |app, _shortcut, _event| {
+            // The frontend owns the action itself; just announce which one.
+            let _ = app.emit("shortcut", action.clone());
+        }) {
+            Ok(()) => {}
+            Err(e) => failures.push(format!("{} ({})", accelerator, e)),
+        }
+    }
+
+    if !failures.is_empty() {
+        warn!("failed to register global shortcuts: {:?}", failures);
+    }
+    Ok(failures)
 }
 
 /// Persist the last-played song id + position.

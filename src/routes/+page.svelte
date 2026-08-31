@@ -1,6 +1,18 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, tick } from "svelte";
+  import {
+    createTable,
+    tableFeatures,
+    columnSizingFeature,
+    columnResizingFeature,
+    columnOrderingFeature,
+    columnVisibilityFeature,
+    type ColumnSizingState,
+    type ColumnOrderState,
+    type ColumnVisibilityState,
+    type Updater,
+  } from "@tanstack/svelte-table";
   import { page } from "$app/stores";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { Search, Play, Download, ListPlus, ExternalLink, Trash2, Tag as TagIcon } from "lucide-svelte";
@@ -17,140 +29,172 @@
   interface ColumnDef {
     id: ColumnId;
     label: string;
-    /** Flex rank (relative grow weight). Kept for reference only. */
-    flex: number;
-    /** Fixed pixel width for truly fixed columns (# and time) — not resizable. */
+    /** Fixed columns (# / 时长) keep an exact width and cannot be resized. */
     fixed?: number;
-    /** Default pixel width for resizable columns. */
-    defWidth?: number;
+    /** Default pixel width. */
+    defWidth: number;
     /** Minimum pixel width when resizing. */
-    min?: number;
+    min: number;
   }
 
-  // Name column flex:1 → grows to fill remaining space; others use flex weights.
   const COLUMN_DEFS: ColumnDef[] = [
-    { id: "num", label: "#", flex: 0, fixed: 40 },
-    { id: "name", label: "名称", flex: 1, min: 120, defWidth: 340 },
-    { id: "tag", label: "标签", flex: 0.55, min: 80, defWidth: 180 },
-    { id: "artist", label: "歌手", flex: 0.45, min: 80, defWidth: 140 },
-    { id: "album", label: "专辑", flex: 0.5, min: 80, defWidth: 150 },
-    { id: "time", label: "时长", flex: 0, fixed: 52 },
+    { id: "num", label: "#", fixed: 40, defWidth: 40, min: 40 },
+    { id: "name", label: "名称", defWidth: 300, min: 120 },
+    { id: "tag", label: "标签", defWidth: 160, min: 80 },
+    { id: "artist", label: "歌手", defWidth: 130, min: 80 },
+    { id: "album", label: "专辑", defWidth: 140, min: 80 },
+    { id: "time", label: "时长", fixed: 52, defWidth: 52, min: 52 },
   ];
 
-  interface ColumnState {
-    id: ColumnId;
-    shown: boolean;
-    /**
-     * Width. For resizable columns this is a flex-weight (a share of the
-     * available width), e.g. name=1, tag=0.55. For fixed columns (# / time) it
-     * is a pixel width. Column widths are derived from these weights, so the
-     * row always fills the container and the rightmost column stays pinned to
-     * the right edge.
-     */
-    width: number;
-  }
-
-  // Resizable columns use flex weights (share of available width).
-  const DEFAULT_COLUMNS: ColumnState[] = [
-    { id: "num", shown: true, width: 40 },
-    { id: "name", shown: true, width: 1 },
-    { id: "tag", shown: true, width: 0.55 },
-    { id: "artist", shown: true, width: 0.45 },
-    { id: "album", shown: true, width: 0.5 },
-    { id: "time", shown: true, width: 52 },
-  ];
-
+  // Column layout (width / order / visibility) is owned by TanStack Table,
+  // which tracks the resize gesture, min/max clamping and touch input. The
+  // three state slices are persisted here so they survive a restart.
   const COL_KEY = "vide_list_columns";
 
-  function loadColumns(): ColumnState[] {
+  interface ColumnPrefs {
+    sizing: ColumnSizingState;
+    order: ColumnOrderState;
+    visibility: ColumnVisibilityState;
+  }
+
+  function defOf(id: string): ColumnDef {
+    return COLUMN_DEFS.find((d) => d.id === id)!;
+  }
+
+  function defaultPrefs(): ColumnPrefs {
+    return {
+      sizing: Object.fromEntries(COLUMN_DEFS.map((d) => [d.id, d.defWidth])),
+      order: COLUMN_DEFS.map((d) => d.id),
+      visibility: Object.fromEntries(COLUMN_DEFS.map((d) => [d.id, true])),
+    };
+  }
+
+  function loadPrefs(): ColumnPrefs {
+    const dflt = defaultPrefs();
     try {
       const saved = localStorage.getItem(COL_KEY);
-      if (saved) {
-        const data = JSON.parse(saved) as ColumnState[];
-        return COLUMN_DEFS.map((def) => {
-          const dflt = DEFAULT_COLUMNS.find((d) => d.id === def.id)!;
-          const found = data.find((c) => c.id === def.id);
-          if (!found) {
-            return { id: def.id, shown: true, width: dflt.width };
-          }
-          let w = found.width;
-          // Fixed columns (# / time) keep their px width.
-          if (def.fixed != null) {
-            return { id: def.id, shown: !!found.shown, width: def.fixed };
-          }
-          // Resizable columns store a flex weight. Migrate any legacy px value
-          // (> 2, from the earlier px-based scheme) back to the default weight.
-          if (w > 2) w = dflt.width;
-          return { id: def.id, shown: !!found.shown, width: w };
-        });
+      if (!saved) return dflt;
+      const data: unknown = JSON.parse(saved);
+      // v1 stored an array of {id, shown, width}; drop it and start fresh.
+      if (!data || typeof data !== "object" || Array.isArray(data)) return dflt;
+      const raw = data as Record<string, unknown>;
+
+      const sizing: ColumnSizingState = { ...dflt.sizing };
+      const rawSizing = (raw.sizing ?? {}) as Record<string, unknown>;
+      for (const d of COLUMN_DEFS) {
+        const w = Number(rawSizing[d.id]);
+        if (Number.isFinite(w) && w > 0) sizing[d.id] = Math.max(w, d.min);
       }
+
+      const order: ColumnOrderState = Array.isArray(raw.order)
+        ? raw.order.filter((id): id is string => COLUMN_DEFS.some((d) => d.id === id))
+        : [];
+      for (const d of COLUMN_DEFS) if (!order.includes(d.id)) order.push(d.id);
+
+      const visibility: ColumnVisibilityState = { ...dflt.visibility };
+      const rawVis = (raw.visibility ?? {}) as Record<string, unknown>;
+      for (const d of COLUMN_DEFS) {
+        if (typeof rawVis[d.id] === "boolean") visibility[d.id] = rawVis[d.id] as boolean;
+      }
+      // Keep at least one column on screen.
+      if (!COLUMN_DEFS.some((d) => visibility[d.id] !== false)) visibility.name = true;
+
+      return { sizing, order, visibility };
     } catch {
-      /* ignore */
+      return dflt;
     }
-    return DEFAULT_COLUMNS.map((c) => ({ ...c }));
   }
 
-  let columns = $state<ColumnState[]>(loadColumns());
-  let visibleColumns = $derived(columns.filter((c) => c.shown));
-  let dragColId = $state<ColumnId | null>(null);
-  let resizeColId = $state<ColumnId | null>(null);
-  let resizeStartX = $state(0);
-  let resizeStartWidth = $state(0);
+  let prefs = $state<ColumnPrefs>(loadPrefs());
 
-  function saveColumns() {
+  function savePrefs() {
     try {
-      localStorage.setItem(COL_KEY, JSON.stringify(columns));
+      localStorage.setItem(COL_KEY, JSON.stringify(prefs));
     } catch {
       /* ignore */
     }
   }
 
-  function updateWidth(id: ColumnId, width: number) {
-    const def = COLUMN_DEFS.find((d) => d.id === id)!;
-    // Fixed columns (num/time) are not resizable.
-    if (def.fixed != null) return;
-    const col = columns.find((c) => c.id === id)!;
-    // Width is a flex weight; clamp to a sensible minimum so columns never vanish.
-    col.width = Math.max(width, def.min ?? 0.1);
-    columns = columns.map((c) => (c.id === id ? { ...c } : c));
+  /** Resolve a TanStack updater (a value or an updater function). */
+  function resolveUpdater<T>(updater: Updater<T>, prev: T): T {
+    return typeof updater === "function" ? (updater as (old: T) => T)(prev) : updater;
   }
 
-  // Resize map: the column being dragged plus the visible column to its right
-  // (if any). Dragging the boundary shifts weight from one to the other so the
-  // total stays constant and the other columns do not move.
-  let resizePair = $state<{ left: ColumnId; right: ColumnId | null; startW: number } | null>(null);
-
-  function startPairResize(e: PointerEvent, id: ColumnId) {
-    e.preventDefault();
-    e.stopPropagation();
-    const th = (e.currentTarget as HTMLElement).closest(".th") as HTMLElement | null;
-    if (th) th.draggable = false;
-    const el = e.currentTarget as HTMLElement;
-    el.setPointerCapture(e.pointerId);
-    // The draggable column is `id`; the next visible column is its right neighbour.
-    const visible = visibleColumns.map((c) => c.id);
-    const idx = visible.indexOf(id);
-    const right = idx >= 0 && idx + 1 < visible.length ? visible[idx + 1] : null;
-    const rightDef = right !== null ? COLUMN_DEFS.find((d) => d.id === right)! : null;
-    resizePair = {
-      left: id,
-      right: rightDef && rightDef.fixed == null ? right : null,
-      startW: columns.find((c) => c.id === id)!.width,
-    };
-    resizeColId = id;
-    resizeStartX = e.clientX;
-    resizeStartWidth = columns.find((c) => c.id === id)!.width;
+  /** Ids of the currently visible columns, in display order. */
+  function visibleIds(): string[] {
+    return prefs.order.filter((id) => prefs.visibility[id] !== false);
   }
 
-  // ── Reorder (drag header) — horizontal-only drag ghost ──
-  function handleHeaderDragStart(e: DragEvent, id: ColumnId) {
-    // If a resize is in progress, suppress reorder drag (HTML5 drag would
-    // otherwise swallow pointer events and break the resize gesture).
-    if (resizeColId) {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
+  /** The visible, resizable column after `id` — the one that gives up width. */
+  function nextResizable(id: string): string | null {
+    const ids = visibleIds();
+    for (let i = ids.indexOf(id) + 1; i < ids.length; i++) {
+      if (defOf(ids[i]).fixed == null) return ids[i];
     }
+    return null;
+  }
+
+  /**
+   * TanStack resizes a single column, which would change the table's total
+   * width and break the "row fills the container" layout. Take the delta from
+   * the next resizable column instead, so the total stays constant and only
+   * the dragged boundary moves.
+   */
+  function applySizing(updater: Updater<ColumnSizingState>): ColumnSizingState {
+    const next = resolveUpdater(updater, prefs.sizing);
+    let changed: string | null = null;
+    let delta = 0;
+    for (const id of Object.keys(next)) {
+      const prev = prefs.sizing[id];
+      if (prev != null && prev !== next[id]) {
+        changed = id;
+        delta = next[id] - prev;
+      }
+    }
+    if (changed == null || delta === 0) return next;
+    const neighbour = nextResizable(changed);
+    if (neighbour == null) return next;
+    const neighbourSize = next[neighbour] ?? defOf(neighbour).defWidth;
+    // Growing: the neighbour gives up space, never dropping below its minimum.
+    const applied = delta > 0 ? Math.min(delta, neighbourSize - defOf(neighbour).min) : delta;
+    return {
+      ...next,
+      [changed]: prefs.sizing[changed] + applied,
+      [neighbour]: neighbourSize - applied,
+    };
+  }
+
+  /** Set one column's width, keeping the table total constant. */
+  function setWidth(id: string, width: number) {
+    const def = defOf(id);
+    if (def.fixed != null) return;
+    prefs = { ...prefs, sizing: applySizing({ ...prefs.sizing, [id]: Math.max(width, def.min) }) };
+    savePrefs();
+  }
+
+  /** Scale the resizable columns so the table keeps filling `width`. */
+  function fitToWidth(width: number) {
+    const visible = visibleIds();
+    const resizable = visible.filter((id) => defOf(id).fixed == null);
+    const fixedTotal = visible.reduce((s, id) => s + (defOf(id).fixed ?? 0), 0);
+    const target = width - fixedTotal;
+    const total = resizable.reduce((s, id) => s + (prefs.sizing[id] ?? defOf(id).defWidth), 0);
+    if (resizable.length === 0 || total <= 0 || target <= 0) return;
+    const k = target / total;
+    if (Math.abs(k - 1) < 0.01) return;
+    const sizing: ColumnSizingState = { ...prefs.sizing };
+    for (const id of resizable) {
+      const cur = sizing[id] ?? defOf(id).defWidth;
+      sizing[id] = Math.max(defOf(id).min, Math.round(cur * k));
+    }
+    prefs = { ...prefs, sizing };
+    savePrefs();
+  }
+
+  let dragColId = $state<string | null>(null);
+
+  // ── Reorder (drag the header label) — horizontal-only drag ghost ──
+  function handleHeaderDragStart(e: DragEvent, id: string) {
     dragColId = id;
     const dt = e.dataTransfer;
     if (!dt) return;
@@ -169,7 +213,7 @@
     setTimeout(() => ghost.remove(), 0);
   }
 
-  function handleHeaderDragOver(e: DragEvent, id: ColumnId) {
+  function handleHeaderDragOver(e: DragEvent, id: string) {
     e.preventDefault();
     if (dragColId && dragColId !== id) {
       (e.currentTarget as HTMLElement).classList.add("drop-target");
@@ -180,74 +224,30 @@
     (e.currentTarget as HTMLElement).classList.remove("drop-target");
   }
 
-  function handleHeaderDrop(e: DragEvent, targetId: ColumnId) {
+  function handleHeaderDrop(e: DragEvent, targetId: string) {
     e.preventDefault();
     (e.currentTarget as HTMLElement).classList.remove("drop-target");
-    if (!dragColId || dragColId === targetId) return;
-    const from = columns.findIndex((c) => c.id === dragColId);
-    const to = columns.findIndex((c) => c.id === targetId);
-    if (from === -1 || to === -1) return;
-    const next = [...columns];
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
-    columns = next;
+    const sourceId = dragColId;
     dragColId = null;
-    saveColumns();
+    if (!sourceId || sourceId === targetId) return;
+    const from = prefs.order.indexOf(sourceId);
+    const to = prefs.order.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const order = [...prefs.order];
+    order.splice(to, 0, ...order.splice(from, 1));
+    prefs = { ...prefs, order };
+    savePrefs();
   }
 
   function handleHeaderDragEnd() {
     dragColId = null;
   }
 
-  // ── Resize (drag handle) — pointer capture for reliable up/down ──
-  function startResize(e: PointerEvent, id: ColumnId) {
-    startPairResize(e, id);
-  }
-
-  function onResizeMove(e: PointerEvent) {
-    if (!resizeColId || !resizePair) return;
-    const delta = e.clientX - resizeStartX;
-    // Convert the pixel delta to a weight delta relative to the container width.
-    const containerW = listEl ? listEl.clientWidth : 600;
-    const wDelta = delta / Math.max(containerW, 1);
-    const leftId = resizePair.left;
-    const rightId = resizePair.right;
-    if (rightId) {
-      // Shift weight from left column to right column and back, keeping the
-      // total constant so the other columns do not move.
-      const lc = columns.find((c) => c.id === leftId)!;
-      const rc = columns.find((c) => c.id === rightId)!;
-      const lw = Math.max(resizePair.startW + wDelta, COLUMN_DEFS.find((d) => d.id === leftId)!.min ?? 0.1);
-      const rw = Math.max(rc.width - (lw - resizePair.startW), COLUMN_DEFS.find((d) => d.id === rightId)!.min ?? 0.1);
-      columns = columns.map((c) =>
-        c.id === leftId ? { ...c, width: lw } : c.id === rightId ? { ...c, width: rw } : c,
-      );
-    } else {
-      updateWidth(leftId, resizePair.startW + wDelta);
-    }
-  }
-
-  function onResizeEnd(e: PointerEvent) {
-    const el = e.currentTarget as HTMLElement;
-    if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
-    // Re-enable reorder drag on the column header now that resizing is done.
-    const th = el?.closest?.(".th") as HTMLElement | null;
-    if (th) th.draggable = true;
-    resizeColId = null;
-    resizePair = null;
-    saveColumns();
-  }
-
-  // Double-click resets to the default (flex) weight.
-  function resetWidth(e: MouseEvent, id: ColumnId) {
+  // Double-click the resize handle to restore the column's default width.
+  function resetWidth(e: MouseEvent, id: string) {
     e.preventDefault();
     e.stopPropagation();
-    const def = COLUMN_DEFS.find((d) => d.id === id)!;
-    const col = columns.find((c) => c.id === id)!;
-    // Reset to the default weight (fixed columns keep their px).
-    col.width = def.fixed ?? DEFAULT_COLUMNS.find((d) => d.id === id)!.width;
-    columns = columns.map((c) => (c.id === id ? { ...c } : c));
-    saveColumns();
+    setWidth(id, defOf(id).defWidth);
   }
 
   // ── Header context menu (show/hide columns) ───────
@@ -256,24 +256,24 @@
 
   function openColMenu(e: MouseEvent) {
     e.preventDefault();
-    const items: MenuItem[] = COLUMN_DEFS.map((def) => {
-      const shown = columns.find((c) => c.id === def.id)!.shown;
+    const canHide = visibleIds().length > 1;
+    colMenuItems = COLUMN_DEFS.map((def) => {
+      const shown = prefs.visibility[def.id] !== false;
       return {
         label: (shown ? "✓ " : "   ") + def.label,
+        disabled: shown && !canHide,
         action: () => {
-          const col = columns.find((c) => c.id === def.id)!;
-          col.shown = !col.shown;
-          // Ensure at least one column stays visible.
-          if (!columns.some((c) => c.shown)) col.shown = true;
-          columns = columns.map((c) => (c.id === def.id ? { ...c } : c));
-          saveColumns();
+          if (shown && !canHide) return;
+          prefs = {
+            ...prefs,
+            visibility: { ...prefs.visibility, [def.id]: !shown },
+          };
+          savePrefs();
         },
       };
     });
-    colMenuItems = items;
     colMenu = { x: e.clientX, y: e.clientY };
   }
-
   // ── Song data ─────────────────────────────────────
   let songs = $state<Song[]>([]);
   let loading = $state(true);
@@ -284,6 +284,9 @@
   let editingSong = $state<Song | null>(null);
   let activePresetId = $state<string | null>(null);
   let listEl = $state<HTMLDivElement | null>(null);
+  // Header element: always rendered, so it can measure the available width
+  // even while the list is empty or still loading.
+  let headerEl = $state<HTMLDivElement | null>(null);
   // Virtual window state (so long lists stay smooth).
   let viewTop = $state(0);        // scrollTop (px)
   let viewHeight = $state(0);     // viewport height (px)
@@ -649,20 +652,71 @@
     return COLUMN_DEFS.find((d) => d.id === id)!.label;
   }
 
-  function isFixed(id: ColumnId): boolean {
-    return COLUMN_DEFS.find((d) => d.id === id)!.fixed != null;
-  }
+  // ── TanStack table: owns column sizing / order / visibility ──
+  const LIST_FEATURES = tableFeatures({
+    columnSizingFeature,
+    columnResizingFeature,
+    columnOrderingFeature,
+    columnVisibilityFeature,
+  });
 
-  function colStyle(id: ColumnId): string {
-    const def = COLUMN_DEFS.find((d) => d.id === id)!;
-    const w = columns.find((c) => c.id === id)!.width;
-    // Fixed columns (# / time) use px. Resizable columns use a flex weight, so
-    // the row always fills the container and the rightmost column stays pinned
-    // to the right edge.
-    if (def.fixed != null) {
-      return "flex: 0 0 " + w + "px; width: " + w + "px; min-width: 0;";
-    }
-    return "flex: " + w + " 1 0; min-width: 0;";
+  const table = createTable({
+    features: LIST_FEATURES,
+    columns: COLUMN_DEFS.map((d) => ({
+      id: d.id,
+      header: d.label,
+      size: d.defWidth,
+      minSize: d.min,
+      maxSize: d.fixed ?? 2000,
+      enableResizing: d.fixed == null,
+    })),
+    get data() {
+      return sortedSongs;
+    },
+    // Commit while dragging so the row layout follows the cursor.
+    columnResizeMode: "onChange",
+    state: {
+      get columnSizing() {
+        return prefs.sizing;
+      },
+      get columnOrder() {
+        return prefs.order;
+      },
+      get columnVisibility() {
+        return prefs.visibility;
+      },
+    },
+    onColumnSizingChange: (updater) => {
+      prefs = { ...prefs, sizing: applySizing(updater) };
+      savePrefs();
+    },
+    onColumnOrderChange: (updater) => {
+      prefs = { ...prefs, order: resolveUpdater(updater, prefs.order) };
+      savePrefs();
+    },
+    onColumnVisibilityChange: (updater) => {
+      prefs = { ...prefs, visibility: resolveUpdater(updater, prefs.visibility) };
+      savePrefs();
+    },
+  });
+
+  /** Flat header list in display order (this table has no column groups). */
+  let headers = $derived(table.getHeaderGroups()[0]?.headers ?? []);
+
+  // Keep the columns filling the list whenever its width changes (window
+  // resize, sidebar toggles, ...).
+  $effect(() => {
+    if (!headerEl) return;
+    const ro = new ResizeObserver(() => {
+      if (headerEl) fitToWidth(headerEl.clientWidth - scrollbarWidth);
+    });
+    ro.observe(headerEl);
+    return () => ro.disconnect();
+  });
+
+  function colStyle(header: { getSize(): number }): string {
+    const size = header.getSize();
+    return "flex: 0 0 " + size + "px; width: " + size + "px; min-width: 0;";
   }
 </script>
 
@@ -676,36 +730,49 @@
 
   <div class="library-main">
     <!-- Table header -->
-    <div class="table-header" style="padding-right: {scrollbarWidth}px">
-      {#each visibleColumns as col}
+    <div class="table-header" bind:this={headerEl} style="padding-right: {scrollbarWidth}px">
+      {#each headers as header (header.id)}
+        <!-- Only the label starts a reorder drag, so the resize handle never
+             competes with the native drag gesture. -->
         <div
           class="th"
-          class:dragging={dragColId === col.id}
-          style={colStyle(col.id)}
-          draggable="true"
-          ondragstart={(e) => handleHeaderDragStart(e, col.id)}
-          ondragover={(e) => handleHeaderDragOver(e, col.id)}
+          class:dragging={dragColId === header.column.id}
+          style={colStyle(header)}
+          ondragover={(e) => handleHeaderDragOver(e, header.column.id)}
           ondragleave={handleHeaderDragLeave}
-          ondrop={(e) => handleHeaderDrop(e, col.id)}
-          ondragend={handleHeaderDragEnd}
+          ondrop={(e) => handleHeaderDrop(e, header.column.id)}
           oncontextmenu={openColMenu}
         >
-          <button class="th-label" onclick={() => toggleSort(col.id)} title="点击排序，拖拽调序">
-            {labelOf(col.id)}{sortIndicator(col.id)}
+          <button
+            class="th-label"
+            draggable="true"
+            onclick={() => toggleSort(header.column.id as ColumnId)}
+            ondragstart={(e) => handleHeaderDragStart(e, header.column.id)}
+            ondragend={handleHeaderDragEnd}
+            title="点击排序，拖拽调序"
+          >
+            {labelOf(header.column.id as ColumnId)}{sortIndicator(header.column.id as ColumnId)}
           </button>
-          {#if !isFixed(col.id)}
+          {#if header.column.getCanResize()}
             <div
               class="resize-handle"
+              class:resizing={header.column.getIsResizing()}
               title="拖动调宽，双击复位"
-              onpointerdown={(e) => startResize(e, col.id)}
-              onpointermove={onResizeMove}
-              onpointerup={onResizeEnd}
-              onpointercancel={onResizeEnd}
-              ondblclick={(e) => resetWidth(e, col.id)}
+              onmousedown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                header.getResizeHandler()(e);
+              }}
+              ontouchstart={(e) => {
+                e.stopPropagation();
+                header.getResizeHandler()(e);
+              }}
+              ondblclick={(e) => resetWidth(e, header.column.id)}
             ></div>
           {/if}
         </div>
       {/each}
+      <div class="col-filler"></div>
     </div>
 
     <!-- List / states -->
@@ -729,21 +796,21 @@
           {@const i = virtualSlice.start + k}
           <div
             class="song-row"
-            class:playing={isPlaying(song)}
+            class:is-playing={isPlaying(song)}
             class:located={locatorTarget === song.id}
             data-song-id={song.id}
             onclick={() => playSong(song)}
             oncontextmenu={(e) => openContextMenu(song, e)}
           >
-            {#each visibleColumns as col}
-              <div class="td" style={colStyle(col.id)}>
-                {#if col.id === "num"}
+            {#each headers as header (header.id)}
+              <div class="td" style={colStyle(header)}>
+                {#if header.column.id === "num"}
                   {#if isPlaying(song)}
                     <span class="playing-indicator">&#9654;</span>
                   {:else}
                     <span class="cell-num">{i + 1}</span>
                   {/if}
-                {:else if col.id === "name"}
+                {:else if header.column.id === "name"}
                   <div class="name-cell">
                     <span class="name-text">{song.title}</span>
                     {#if platformTag(song)}
@@ -752,21 +819,22 @@
                       </span>
                     {/if}
                   </div>
-                {:else if col.id === "tag"}
+                {:else if header.column.id === "tag"}
                   <div class="tag-cell">
                     {#if song.tags.length > 0}
                       <span class="tag-cell-text">{tagText(song)}</span>
                     {/if}
                   </div>
-                {:else if col.id === "artist"}
+                {:else if header.column.id === "artist"}
                   <span class="cell-text">{displayText(song, "artist")}</span>
-                {:else if col.id === "album"}
+                {:else if header.column.id === "album"}
                   <span class="cell-text">{displayText(song, "album")}</span>
-                {:else if col.id === "time"}
+                {:else if header.column.id === "time"}
                   <span class="cell-time">{formatDuration(song.metadata.duration)}</span>
                 {/if}
               </div>
             {/each}
+            <div class="col-filler"></div>
           </div>
         {/each}
         <div class="virtual-pad" style="height: {virtualSlice.padBottom}px"></div>
@@ -864,12 +932,18 @@
     width: 7px;
     cursor: col-resize;
     z-index: 3;
+    touch-action: none;
   }
   .resize-handle::after {
     content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px;
     width: 1px; background: transparent; transition: background 0.12s;
   }
-  .resize-handle:hover::after { background: var(--color-primary) / 0.6; }
+  .resize-handle:hover::after,
+  .resize-handle.resizing::after { background: var(--color-primary) / 0.6; }
+
+  /* Absorbs the slack between the last column and the right edge so rows and
+     the header always span the full width. */
+  .col-filler { flex: 1 1 0; min-width: 0; }
 
   /* Body */
   .song-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
@@ -885,8 +959,8 @@
     transition: background 0.1s;
   }
   .song-row:hover { background: var(--color-base-300) / 0.7; }
-  .song-row.playing { background: var(--color-primary) / 0.12; }
-  .song-row.playing .name-text { color: var(--color-primary); }
+  .song-row.is-playing { background: var(--color-primary) / 0.12; }
+  .song-row.is-playing .name-text { color: var(--color-primary); }
   .song-row.located { background: var(--color-primary) / 0.2; }
   .song-row.located .name-text { color: var(--color-primary); font-weight: 600; }
 

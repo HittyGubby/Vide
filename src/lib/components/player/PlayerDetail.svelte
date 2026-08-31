@@ -11,6 +11,7 @@
     SkipForward,
     Tag,
     Gauge,
+    MessageSquareQuote,
     ChevronDown,
     Minus,
     Plus,
@@ -20,6 +21,8 @@
   import VolumeControl from "$lib/components/player/VolumeControl.svelte";
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
   import SeekBar from "$lib/components/player/SeekBar.svelte";
+  import LyricsView from "$lib/components/lyrics/LyricsView.svelte";
+  import { parseLyrics } from "$lib/lyrics";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import type { Song } from "$lib/types";
@@ -46,6 +49,15 @@
 
   async function togglePlay() {
     await player.togglePause();
+  }
+
+  // Visibility of the desktop lyrics window is a setting; the root layout
+  // mirrors it onto the window itself.
+  async function toggleDesktopLyrics() {
+    await settingsStore.update(
+      "desktop_lyrics_enabled",
+      !settingsStore.settings.desktop_lyrics_enabled,
+    );
   }
 
   async function seekTrack(targetSecs: number) {
@@ -100,56 +112,17 @@
 
   // Status text shown next to the time (like LX's "Failed to get lyrics").
   let lyricStatusText = $derived(
-    lyricsLoading ? "加载歌词..." : lyricsText ? firstLyricLine(lyricsText) : "暂无歌词",
+    lyricsLoading ? "加载歌词..." : lyricsText ? firstLyricLine(lyricsText) : "",
   );
 
   function firstLyricLine(t: string): string {
     const l = t.split("\n").map((s) => s.trim()).find((s) => s.length > 0);
-    return l ?? "暂无歌词";
+    return l ?? "";
   }
 
-  // ── Timed lyrics: parse [mm:ss] markers, highlight the active line ──
-  let lrcLines = $state<{ t: number; text: string }[]>([]);
-  function parseLrc(raw: string): { t: number; text: string }[] {
-    const out: { t: number; text: string }[] = [];
-    for (const line of raw.split("\n")) {
-      const m = line.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
-      if (m) out.push({ t: parseInt(m[1]) * 60 + parseFloat(m[2]), text: m[3] || "" });
-    }
-    out.sort((a, b) => a.t - b.t);
-    return out;
-  }
-  $effect(() => {
-    if (lyricsText) lrcLines = parseLrc(lyricsText);
-    else lrcLines = [];
-  });
-  let activeLineIdx = $derived.by(() => {
-    if (lrcLines.length === 0) return -1;
-    let idx = -1;
-    for (let i = 0; i < lrcLines.length; i++) {
-      if (lrcLines[i].t <= player.elapsed) idx = i;
-      else break;
-    }
-    return idx;
-  });
-
-  // ── Right-click lyrics → font size adjuster (minus / current / plus) ──
-  let lyrCtx = $state<{ x: number; y: number } | null>(null);
-  function openLyrMenu(e: MouseEvent) {
-    e.preventDefault();
-    lyrCtx = { x: e.clientX, y: e.clientY };
-  }
-  function closeLyrMenu() {
-    lyrCtx = null;
-  }
-  function lyrDec() {
-    const cur = settingsStore.settings.lyrics_font_size ?? 14;
-    settingsStore.update("lyrics_font_size", Math.max(10, cur - 1));
-  }
-  function lyrInc() {
-    const cur = settingsStore.settings.lyrics_font_size ?? 14;
-    settingsStore.update("lyrics_font_size", Math.min(48, cur + 1));
-  }
+  // Timed lyrics: parse [mm:ss] markers, highlight the active line. The same
+  // component (and the same user stylesheet) powers the desktop lyrics window.
+  let lrcLines = $derived.by(() => (lyricsText ? parseLyrics(lyricsText) : []));
 
   // ── Drag on lyrics to seek ──
   let dragging = $state(false);
@@ -176,14 +149,6 @@
     const el = e.currentTarget as HTMLElement;
     if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
   }
-
-  // Apply user config to the lyrics block (alignment + font size).
-  let LyricsStyle = $derived.by(() => {
-    const align = settingsStore.settings.lyrics_align ?? "center";
-    const size = settingsStore.settings.lyrics_font_size ?? 14;
-    const ta = align === "left" ? "left" : align === "right" ? "right" : "center";
-    return "text-align: " + ta + "; font-size: " + size + "px;";
-  });
 
   // ── Playback rate popup ──────────────────────────
   let rateOpen = $state(false);
@@ -259,34 +224,24 @@
       {#if lyricsLoading}
         <p class="lyrics-hint">加载歌词...</p>
       {:else if lyricsText}
+        <!-- Same component and stylesheet as the desktop lyrics window, so the
+             CSS edited in the settings applies here too. -->
         <div
           class="lyrics-content"
-          style={LyricsStyle}
-          oncontextmenu={openLyrMenu}
           onpointerdown={onLyrPointerDown}
           onpointermove={onLyrPointerMove}
           onpointerup={onLyrPointerUp}
           onpointercancel={onLyrPointerUp}
         >
-          {#if lrcLines.length > 0}
-            {#each lrcLines as lrc, i}
-              <p
-                class="lyrics-line"
-                class:active={i === activeLineIdx}
-                class:lyrics-empty={!lrc.text.trim()}
-              >{lrc.text}</p>
-            {/each}
-          {:else}
-            {#each lyricsText.split("\n") as line}
-              <p class="lyrics-line" class:lyrics-empty={!line.trim()}>{line}</p>
-            {/each}
-          {/if}
+          <LyricsView
+            lines={lrcLines}
+            elapsed={player.elapsed}
+            css={settingsStore.settings.detail_lyrics_css}
+          />
         </div>
       {:else}
         <div class="lyrics-placeholder">
           <span class="lyrics-icon">&#9835;</span>
-          <p class="lyrics-text">暂无歌词</p>
-          <p class="lyrics-sub">歌词由插件系统提供</p>
         </div>
       {/if}
     </div>
@@ -341,6 +296,17 @@
           {/if}
         </div>
         <VolumeControl />
+
+        <button
+          class="d-btn"
+          class:active={settingsStore.settings.desktop_lyrics_enabled}
+          title="桌面歌词"
+          aria-label="桌面歌词"
+          onclick={toggleDesktopLyrics}
+        >
+          <MessageSquareQuote size={16} />
+        </button>
+
         <PlayModeControl />
         <button class="d-btn" title="编辑标签" aria-label="编辑标签" onclick={openTagEditor}>
           <Tag size={16} />
@@ -380,15 +346,6 @@
 
 {#if tagSong}
   <TagEditor song={tagSong} onclose={closeTagEditor} />
-{/if}
-
-{#if lyrCtx}
-  <div class="lyr-pop-backdrop" onclick={closeLyrMenu}></div>
-  <div class="lyr-pop" style="left: {lyrCtx.x}px; top: {lyrCtx.y}px">
-    <button class="lyr-btn" onclick={lyrDec} aria-label="缩小字体"><Minus size={15} /></button>
-    <span class="lyr-size">{settingsStore.settings.lyrics_font_size ?? 14}px</span>
-    <button class="lyr-btn" onclick={lyrInc} aria-label="放大字体"><Plus size={15} /></button>
-  </div>
 {/if}
 
 <style>
@@ -478,10 +435,8 @@
     flex: 1; max-width: 420px; height: 100%; max-height: 72%;
     overflow-y: auto; display: flex; flex-direction: column; justify-content: center;
   }
-  .lyrics-content { padding: 8px 0; line-height: 1.9; }
-  .lyrics-line { font-size: 14px; color: var(--color-base-content) / 0.6; white-space: pre-wrap; word-break: break-word; transition: color 0.2s, transform 0.2s; }
-  .lyrics-line.active { color: var(--color-base-content); transform: scale(1.18); font-weight: 600; }
-  .lyrics-empty { height: 0.5em; }
+  /* The lyrics markup and its look now come from LyricsView + the user CSS. */
+  .lyrics-content { height: 100%; min-height: 0; }
   .lyrics-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     color: var(--color-base-content) / 0.55; text-align: center;
@@ -580,29 +535,4 @@
   }
   .d-btn.play-big:hover { color: var(--color-primary); }
 
-  .lyr-pop-backdrop {
-    position: fixed; inset: 0; z-index: 500; background: transparent;
-  }
-  .lyr-pop {
-    position: fixed; z-index: 501;
-    transform: translate(-50%, -100%);
-    margin-top: -8px;
-    display: flex; align-items: center; gap: 10px;
-    background: var(--color-base-300);
-    border: 1px solid var(--panel-border-strong);
-    border-radius: 8px;
-    padding: 6px 10px;
-    box-shadow: var(--shadow-md);
-  }
-  .lyr-btn {
-    display: flex; align-items: center; justify-content: center;
-    width: 28px; height: 28px; border-radius: 6px;
-    color: var(--color-base-content); background: none; border: none;
-  }
-  .lyr-btn:hover { background: var(--color-base-200); }
-  .lyr-size {
-    min-width: 44px; text-align: center;
-    font-size: 13px; font-weight: 600;
-    color: var(--color-primary); font-variant-numeric: tabular-nums;
-  }
 </style>

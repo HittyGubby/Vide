@@ -685,6 +685,26 @@ impl Database {
         Ok(entries)
     }
 
+    /// Drop every cache entry (used by "clear audio cache").
+    pub async fn delete_all_cache_entries(&self) -> Result<u64, DbErr> {
+        use entity::cache_entry;
+        let res = cache_entry::Entity::delete_many().exec(&self.conn).await?;
+        Ok(res.rows_affected)
+    }
+
+    /// Raw `metadata_json` for every song — enough to count the text caches
+    /// without loading tags, sources and paths for the whole library.
+    pub async fn list_metadata_json(&self) -> Result<Vec<String>, DbErr> {
+        use entity::song;
+        let rows = song::Entity::find()
+            .select_only()
+            .column(song::Column::MetadataJson)
+            .into_tuple::<(String,)>()
+            .all(&self.conn)
+            .await?;
+        Ok(rows.into_iter().map(|(json,)| json).collect())
+    }
+
     /// Delete all invalid cache entries from the database.
     pub async fn delete_invalid_cache_entries(&self) -> Result<(), DbErr> {
         use entity::cache_entry;
@@ -743,8 +763,8 @@ impl Database {
                 if s.font_family.is_empty() {
                     s.font_family = defaults.font_family;
                 }
-                if s.lyrics_align.is_empty() {
-                    s.lyrics_align = defaults.lyrics_align;
+                if s.desktop_lyrics_position.is_empty() {
+                    s.desktop_lyrics_position = defaults.desktop_lyrics_position;
                 }
                 Ok(s)
             }

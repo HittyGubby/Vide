@@ -107,6 +107,39 @@ export interface SearchResultItem {
   duration?: number;
 }
 
+/* ── Shortcuts ─────────────────────────── */
+export type ShortcutAction =
+  | "toggle_window"
+  | "toggle_lyrics"
+  | "quit"
+  | "toggle_play"
+  | "prev_track"
+  | "next_track"
+  | "volume_down"
+  | "volume_up"
+  | "seek_back"
+  | "seek_forward";
+
+/** An empty string means the action has no binding. */
+export interface ShortcutBinding {
+  in_app: string;
+  global: string;
+}
+
+export type ShortcutSettings = Record<ShortcutAction, ShortcutBinding>;
+
+/* ── Desktop lyrics ────────────────────── */
+export type LyricsPosition = "top" | "center" | "bottom";
+
+/* ── Cache ─────────────────────────────── */
+export interface CacheStat {
+  kind: string;
+  label: string;
+  count: number;
+  /** Bytes on disk; absent for caches stored as text in SQLite. */
+  size?: number | null;
+}
+
 /* ── App Settings ──────────────────────── */
 export interface AppSettings {
   close_to_tray: boolean;
@@ -114,6 +147,14 @@ export interface AppSettings {
   pause_on_device_change: boolean;
   window_scale: number;
   font_family: string;
-  lyrics_align: string; // 'left' | 'center' | 'right'
-  lyrics_font_size: number;
+  desktop_lyrics_enabled: boolean;
+  desktop_lyrics_locked: boolean;
+  desktop_lyrics_always_on_top: boolean;
+  desktop_lyrics_position: LyricsPosition;
+  theme_primary: string;
+  desktop_lyrics_css: string;
+  detail_lyrics_css: string;
+  shortcuts: ShortcutSettings;
+  seek_step_secs: number;
+  volume_step: number;
 }

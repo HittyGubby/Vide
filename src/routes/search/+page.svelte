@@ -9,7 +9,7 @@
   import type { SearchResultItem } from "$lib/types";
 
   let query = $state("");
-  let activePlatform = $state<string | null>(null);
+  let activePlatform = $state<string | null>("youtube");
   let searchType = $state<"music" | "songlist">("music");
   let results = $state<SearchResultItem[]>([]);
   let loading = $state(false);
@@ -20,7 +20,6 @@
   // this list is derived from what the plugin system supports. Until then,
   // these mirror the LX Music screenshot.
   const platforms = [
-    { id: null, label: "Aggregated" },
     { id: "youtube", label: "YouTube" },
     { id: "bilibili", label: "Bilibili" },
     { id: "kugou", label: "Kugou" },

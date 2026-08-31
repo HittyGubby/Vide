@@ -9,14 +9,18 @@ pub use infra::*;
 use std::path::PathBuf;
 use tauri::Manager;
 
-fn db_path() -> PathBuf {
+/// Directory holding the database and all on-disk caches.
+pub fn app_data_dir() -> PathBuf {
     let mut path = dirs::data_dir().unwrap_or_else(|| {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     });
     path.push("vide");
     std::fs::create_dir_all(&path).ok();
-    path.push("vide.db");
     path
+}
+
+fn db_path() -> PathBuf {
+    app_data_dir().join("vide.db")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -36,6 +40,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(app_state)
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -144,6 +149,11 @@ pub fn run() {
             features::ui::set_app_settings,
             features::ui::get_last_played,
             features::ui::save_last_played,
+            // Shortcuts
+            features::ui::set_global_shortcuts,
+            // Caches
+            features::ui::get_cache_stats,
+            features::ui::clear_cache_kind,
             // Tags
             features::ui::get_meta_tags,
             features::ui::add_tag,

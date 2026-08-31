@@ -18,6 +18,20 @@
         "minWidth": 900,
         "minHeight": 600,
         "decorations": false
+      },
+      {
+        "label": "lyrics",
+        "title": "Vide 桌面歌词",
+        "url": "/desktop-lyrics",
+        "width": 900,
+        "height": 260,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {

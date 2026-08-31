@@ -127,13 +127,20 @@ class PlayerStore {
         elapsed_secs?: number;
         duration_secs?: number;
       }>("toggle_pause");
-      // If the backend has no live playback (e.g. restored on startup but not
-      // actually playing), a plain toggle is a no-op. In that case start the
-      // remembered song, resuming at the stored position if we have one.
-      if (status.state === "Stopped" && this.mediaId) {
-        // playId passes _pendingSeek to the backend, which seeks there once
-        // mpv is ready — so a startup resume lands at the saved position.
-        await this.playId(this.mediaId);
+      // Nothing is loaded (restored on startup) or the track already ran to
+      // its end: a plain toggle is a no-op, so start the remembered song.
+      if (this.mediaId && (status.state === "Stopped" || status.state === "Ended")) {
+        if (status.state === "Ended") {
+          // The track finished — replay it rather than doing nothing.
+          await this.playId(this.mediaId, 0);
+          return;
+        }
+        // Prefer _pendingSeek; fall back to the position the UI is showing.
+        const saved = this._pendingSeek > 0 ? this._pendingSeek : this.elapsed;
+        // Resuming inside the last moment of a track ends instantly and used
+        // to leave the player wedged in its "ended" state, so start over.
+        const resume = this.duration > 0 && saved >= this.duration - 2 ? 0 : saved;
+        await this.playId(this.mediaId, resume);
         return;
       }
       this.isPlaying = status.state === "Playing";
@@ -158,6 +165,18 @@ class PlayerStore {
       this.elapsed = 0;
     } catch (e) {
       console.error("stop error:", e);
+    }
+  }
+
+  /** Seek by a relative amount (seconds) — used by the seek shortcuts. */
+  async seekBy(delta: number) {
+    if (!this.mediaId || this.duration <= 0) return;
+    const target = Math.max(0, Math.min(this.duration, this.elapsed + delta));
+    try {
+      await invoke("seek", { positionSecs: target });
+      this.elapsed = target;
+    } catch (e) {
+      console.error("seek error:", e);
     }
   }
 
@@ -195,17 +214,21 @@ class PlayerStore {
     }
   }
 
-  /** Play a specific song id (tells the backend to play it immediately). */
-  async playId(id: string) {
+  /** Play a specific song id (tells the backend to play it immediately).
+   * `resumeAt` (seconds) is applied by the backend once mpv is ready. */
+  async playId(id: string, resumeAt = 0) {
+    const position = resumeAt > 0 ? resumeAt : this._pendingSeek;
+    this._pendingSeek = 0;
     try {
       const status = await invoke<{
         state: string;
         media_id?: string;
         elapsed_secs?: number;
         duration_secs?: number;
-      }>("play_song", { id, positionSecs: this._pendingSeek > 0 ? this._pendingSeek : null });
-      // Backend resumes at the saved position; clear it once used.
-      this._pendingSeek = 0;
+      }>("play_song", {
+        id,
+        positionSecs: position > 0 ? position : null,
+      });
       await this._syncStatus(status);
     } catch (e) {
       console.error("play error:", e);
@@ -286,11 +309,15 @@ class PlayerStore {
 
       this.isPlaying = status.state === "Playing";
       this.elapsed = status.elapsed_secs ?? 0;
-      this.duration = status.duration_secs ?? 0;
+      // mpv reports no duration until the new file is fully opened. Keeping
+      // the previous value avoids the bar disappearing and reappearing (and
+      // the resulting jump) on every track change.
+      this.duration = status.duration_secs ?? this.duration;
 
       // The media finished naturally — advance to the next track per the
-      // current play mode. Backend keeps media_id while in Ended state.
-      if (status.state === "Ended") {
+      // current play mode. With no queue there is nowhere to go, so leave
+      // the state alone instead of asking the backend every second.
+      if (status.state === "Ended" && this.queue.length > 0) {
         void this.playNext(true);
       }
 

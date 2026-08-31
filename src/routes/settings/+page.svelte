@@ -3,7 +3,10 @@
   import { onMount } from "svelte";
   import { Settings as SettingsIcon, Scan, Download, Upload, FolderPlus, Edit, X, Check } from "lucide-svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
-  import type { AppSettings } from "$lib/types";
+  import ShortcutCell from "$lib/components/settings/ShortcutCell.svelte";
+  import MonacoCssEditor from "$lib/components/settings/MonacoCssEditor.svelte";
+  import { SHORTCUT_ACTIONS } from "$lib/shortcuts";
+  import type { AppSettings, CacheStat, ShortcutAction } from "$lib/types";
 
   let roots = $state<string[]>([]);
   let excludeRoots = $state<string[]>([]);
@@ -18,6 +21,9 @@
   let exporting = $state(false);
   let exportDone = $state(false);
   let importMessage = $state<string | null>(null);
+  let cacheStats = $state<CacheStat[]>([]);
+  let cacheBusy = $state<string | null>(null);
+  let cacheNote = $state<string | null>(null);
 
   onMount(async () => {
     await settingsStore.load();
@@ -28,12 +34,50 @@
       roots = [];
       excludeRoots = [];
     }
+    await loadCacheStats();
   });
 
-  const alignOptions = [
-    { id: "left", label: "左侧对齐" },
-    { id: "center", label: "居中" },
-    { id: "right", label: "右侧对齐" },
+  // ── Cache manager ──────────────────────────
+  async function loadCacheStats() {
+    try {
+      cacheStats = await invoke<CacheStat[]>("get_cache_stats");
+    } catch (e) {
+      console.error("load cache stats error:", e);
+    }
+  }
+
+  async function clearCache(kind: string) {
+    cacheBusy = kind;
+    cacheNote = null;
+    try {
+      const removed = await invoke<number>("clear_cache_kind", { kind });
+      cacheNote = "已清除 " + removed + " 项";
+      await loadCacheStats();
+    } catch (e) {
+      console.error("clear cache error:", e);
+      cacheNote = "清除失败";
+    } finally {
+      cacheBusy = null;
+    }
+  }
+
+  function formatBytes(bytes?: number | null): string {
+    if (bytes == null) return "";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let v = bytes;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    const digits = i === 0 || v >= 100 ? 0 : v >= 10 ? 1 : 2;
+    return v.toFixed(digits) + units[i];
+  }
+
+  const positionOptions = [
+    { id: "top", label: "顶部" },
+    { id: "center", label: "中部" },
+    { id: "bottom", label: "下部" },
   ];
 
   async function toggle(key: keyof AppSettings, value: boolean) {
@@ -48,6 +92,22 @@
 
   async function setText(key: keyof AppSettings, value: string) {
     await settingsStore.update(key, value);
+  }
+
+  async function setFloat(key: keyof AppSettings, value: string) {
+    const n = parseFloat(value);
+    if (isNaN(n)) return;
+    await settingsStore.update(key, n);
+  }
+
+  async function updateShortcut(
+    action: ShortcutAction,
+    field: "in_app" | "global",
+    value: string,
+  ) {
+    const shortcuts = { ...settingsStore.settings.shortcuts };
+    shortcuts[action] = { ...shortcuts[action], [field]: value };
+    await settingsStore.update("shortcuts", shortcuts);
   }
 
   // ── Included library roots (CRUD) ─────────────
@@ -272,6 +332,30 @@
         />
       </div>
       <div class="row input-row">
+        <span class="row-label">主题色</span>
+        <div class="color-row">
+          <input
+            type="color"
+            value={settingsStore.settings.theme_primary}
+            oninput={(e) => setText("theme_primary", (e.currentTarget as HTMLInputElement).value)}
+            class="color-input"
+          />
+          <input
+            type="text"
+            value={settingsStore.settings.theme_primary}
+            onchange={(e) => setText("theme_primary", (e.currentTarget as HTMLInputElement).value)}
+            placeholder="#5f5dfd"
+            class="text-input color-text"
+          />
+          <button
+            class="clear-btn"
+            onclick={() => setText("theme_primary", "#5f5dfd")}
+          >
+            重置
+          </button>
+        </div>
+      </div>
+      <div class="row input-row">
         <span class="row-label">字体</span>
         <input
           type="text"
@@ -284,38 +368,178 @@
     </div>
   </section>
 
-  <!-- 歌词 -->
+  <!-- 快捷键 -->
   <section class="group">
-    <h2 class="group-title">歌词</h2>
+    <h2 class="group-title">快捷键</h2>
     <div class="setting-card">
+      <table class="shortcut-table">
+        <thead>
+          <tr>
+            <th class="sc-action">操作</th>
+            <th class="sc-key">应用内快捷键</th>
+            <th class="sc-key">全局快捷键</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each SHORTCUT_ACTIONS as item}
+            <tr>
+              <td class="sc-action">{item.label}</td>
+              <td class="sc-key">
+                <ShortcutCell
+                  value={settingsStore.settings.shortcuts[item.id].in_app}
+                  onchange={(v) => updateShortcut(item.id, "in_app", v)}
+                />
+              </td>
+              <td class="sc-key">
+                <ShortcutCell
+                  value={settingsStore.settings.shortcuts[item.id].global}
+                  onchange={(v) => updateShortcut(item.id, "global", v)}
+                />
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <p class="sc-hint">
+        点击单元格后按下新的组合键即可修改；Backspace 清除，Esc 取消。全局快捷键在应用未获得焦点时同样生效。
+      </p>
+      <div class="row input-row">
+        <span class="row-label">快进/快退时长（秒）</span>
+        <input
+          type="number"
+          min="1"
+          max="120"
+          step="1"
+          value={settingsStore.settings.seek_step_secs}
+          onchange={(e) => setFloat("seek_step_secs", (e.currentTarget as HTMLInputElement).value)}
+          class="num-input"
+        />
+      </div>
+      <div class="row input-row">
+        <span class="row-label">音量调节步长</span>
+        <input
+          type="number"
+          min="1"
+          max="50"
+          step="1"
+          value={settingsStore.settings.volume_step}
+          onchange={(e) => setNumber("volume_step", (e.currentTarget as HTMLInputElement).value)}
+          class="num-input"
+        />
+      </div>
+    </div>
+  </section>
+
+  <!-- 缓存管理 -->
+  <section class="group">
+    <h2 class="group-title">缓存管理</h2>
+    <div class="setting-card">
+      <table class="cache-table">
+        <thead>
+          <tr>
+            <th>缓存项</th>
+            <th class="cache-amount">数量（大小）</th>
+            <th class="cache-action">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each cacheStats as stat}
+            <tr>
+              <td>{stat.label}</td>
+              <td class="cache-amount">
+                {stat.count}{stat.size != null ? "（" + formatBytes(stat.size) + "）" : ""}
+              </td>
+              <td class="cache-action">
+                <button
+                  class="clear-btn"
+                  disabled={cacheBusy === stat.kind}
+                  onclick={() => clearCache(stat.kind)}
+                >
+                  {cacheBusy === stat.kind ? "清除中…" : "清除"}
+                </button>
+              </td>
+            </tr>
+          {:else}
+            <tr><td class="cache-empty" colspan="3">加载中…</td></tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if cacheNote}
+        <p class="sc-hint">{cacheNote}</p>
+      {/if}
+    </div>
+  </section>
+
+  <!-- 桌面歌词 -->
+  <section class="group">
+    <h2 class="group-title">桌面歌词</h2>
+    <div class="setting-card">
+      <label class="row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settingsStore.settings.desktop_lyrics_enabled}
+          onchange={(e) => toggle("desktop_lyrics_enabled", (e.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>展示桌面歌词窗口</span>
+      </label>
+      <label class="row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settingsStore.settings.desktop_lyrics_always_on_top}
+          onchange={(e) => toggle("desktop_lyrics_always_on_top", (e.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>保持歌词窗口在最顶端</span>
+      </label>
+      <label class="row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settingsStore.settings.desktop_lyrics_locked}
+          onchange={(e) => toggle("desktop_lyrics_locked", (e.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>锁定歌词窗口</span>
+      </label>
+      <p class="sc-hint">
+        锁定后窗口不再响应拖拽与缩放，并且所有输入事件都会透穿到下层的窗口。
+      </p>
       <div class="row radio-row">
-        <span class="row-label">歌词靠侧</span>
+        <span class="row-label">正在播放的歌词行位置</span>
         <div class="radio-group">
-          {#each alignOptions as opt}
+          {#each positionOptions as opt}
             <label class="radio-opt">
               <input
                 type="radio"
-                name="lyrics_align"
+                name="desktop_lyrics_position"
                 value={opt.id}
-                checked={settingsStore.settings.lyrics_align === opt.id}
-                onchange={() => setText("lyrics_align", opt.id)}
+                checked={settingsStore.settings.desktop_lyrics_position === opt.id}
+                onchange={() => setText("desktop_lyrics_position", opt.id)}
               />
               <span>{opt.label}</span>
             </label>
           {/each}
         </div>
       </div>
-      <div class="row input-row">
-        <span class="row-label">歌词字号</span>
-        <input
-          type="number"
-          min="10"
-          max="40"
-          value={settingsStore.settings.lyrics_font_size}
-          onchange={(e) => setNumber("lyrics_font_size", (e.currentTarget as HTMLInputElement).value)}
-          class="num-input"
-        />
-      </div>
+    </div>
+  </section>
+
+  <!-- 歌词样式 -->
+  <section class="group">
+    <h2 class="group-title">歌词样式</h2>
+    <div class="setting-card">
+      <p class="sc-hint">
+        两段 CSS 分别作用于悬浮歌词窗口和播放详情页面的歌词区域，保存后立即生效。自动滚动由上面的“歌词行位置”控制，其余外观完全交给这里的样式。
+      </p>
+      <p class="editor-label">悬浮歌词样式</p>
+      <MonacoCssEditor
+        value={settingsStore.settings.desktop_lyrics_css}
+        onchange={(next) => setText("desktop_lyrics_css", next)}
+        heightPx={300}
+      />
+      <p class="editor-label">播放详情歌词样式</p>
+      <MonacoCssEditor
+        value={settingsStore.settings.detail_lyrics_css}
+        onchange={(next) => setText("detail_lyrics_css", next)}
+        heightPx={300}
+      />
     </div>
   </section>
 
@@ -481,6 +705,92 @@
   .row + .row { border-top: 1px solid var(--panel-border); }
 
   .row-label { font-size: 13px; color: var(--color-base-content); }
+
+  .shortcut-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .shortcut-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-base-content) / 0.55;
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .shortcut-table th.sc-key,
+  .shortcut-table td.sc-key { text-align: center; }
+  .shortcut-table td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--panel-border);
+    vertical-align: middle;
+  }
+  .shortcut-table tr:last-child td { border-bottom: none; }
+  .shortcut-table td.sc-action {
+    color: var(--color-base-content);
+    white-space: nowrap;
+  }
+  .shortcut-table td.sc-key { width: 34%; }
+
+  .sc-hint {
+    font-size: 11px;
+    color: var(--color-base-content) / 0.55;
+    line-height: 1.6;
+    padding: 6px 0 2px;
+  }
+
+  .color-row { display: flex; align-items: center; gap: 8px; }
+  .color-input {
+    width: 40px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    background: none;
+    cursor: pointer;
+  }
+  .color-text { width: 110px; }
+
+  .editor-label {
+    color: var(--color-base-content) / 0.7;
+    padding: 8px 2px 2px;
+  }
+
+  .cache-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .cache-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-base-content) / 0.55;
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .cache-table th.cache-amount { text-align: right; }
+  .cache-table th.cache-action { text-align: right; }
+  .cache-table td {
+    padding: 6px;
+    border-bottom: 1px solid var(--panel-border);
+    vertical-align: middle;
+  }
+  .cache-table tr:last-child td { border-bottom: none; }
+  .cache-amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cache-action { text-align: right; width: 90px; }
+  .cache-empty { text-align: center; color: var(--color-base-content) / 0.5; }
+
+  .clear-btn {
+    padding: 4px 12px;
+    border: 1px solid var(--panel-border-strong, var(--panel-border));
+    border-radius: 6px;
+    background: var(--color-base-100);
+    color: var(--color-base-content);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.12s, color 0.12s;
+  }
+  .clear-btn:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
+  .clear-btn:disabled { opacity: 0.5; cursor: default; }
 
   .checkbox-row { cursor: pointer; }
   .checkbox-row input { accent-color: var(--color-primary); width: 16px; height: 16px; }

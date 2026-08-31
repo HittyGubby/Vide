@@ -11,7 +11,9 @@
     SkipBack,
     SkipForward,
     Tag,
+    MessageSquareQuote,
   } from "lucide-svelte";
+  import { settingsStore } from "$lib/stores/settings.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import VolumeControl from "$lib/components/player/VolumeControl.svelte";
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
@@ -45,6 +47,15 @@
 
   async function togglePlay() {
     await player.togglePause();
+  }
+
+  // Visibility of the desktop lyrics window is a setting; the root layout
+  // mirrors it onto the window itself.
+  async function toggleDesktopLyrics() {
+    await settingsStore.update(
+      "desktop_lyrics_enabled",
+      !settingsStore.settings.desktop_lyrics_enabled,
+    );
   }
 
   async function seekTrack(targetSecs: number) {
@@ -193,6 +204,17 @@
     </button>
 
     <VolumeControl />
+
+    <button
+      class="ctrl-btn"
+      class:active={settingsStore.settings.desktop_lyrics_enabled}
+      title="桌面歌词"
+      aria-label="桌面歌词"
+      onclick={toggleDesktopLyrics}
+    >
+      <MessageSquareQuote size={15} />
+    </button>
+
     <PlayModeControl />
   </div>
 
@@ -331,6 +353,7 @@
     transition: background 0.15s, color 0.15s;
   }
   .ctrl-btn:hover:not(:disabled) { background: var(--color-base-300); color: var(--color-base-content); }
+  .ctrl-btn.active { color: var(--color-primary); }
   .ctrl-btn:disabled { opacity: 0.4; cursor: default; }
 
   .play-controls { display: flex; align-items: center; gap: 2px; }

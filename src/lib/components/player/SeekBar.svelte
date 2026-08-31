@@ -21,26 +21,61 @@
   // Local interpolation so the bar advances smoothly between polls.
   let displayElapsed = $state(elapsed);
   let lastBase = elapsed;
-  let lastBaseAt = typeof performance !== "undefined" ? performance.now() : 0;
+  let lastBaseAt = now();
   let rafId: number | null = null;
 
+  function now(): number {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
+  }
+
+  // Following lx-music-desktop: the bar only animates when the position jumps
+  // by more than a couple of seconds (seek, track change, resume at a saved
+  // position). Normal playback is advanced frame-by-frame instead, because a
+  // CSS transition restarted every frame would just lag behind the audio.
+  const JUMP_SECS = 2;
+  const TWEEN_MS = 250;
+  let tweenFrom = 0;
+  let tweenTo = 0;
+  let tweenStart = 0;
+  let tweening = false;
+
+  function startTween(to: number) {
+    tweenFrom = displayElapsed;
+    tweenTo = to;
+    tweenStart = now();
+    tweening = true;
+  }
+
+  function stopTween(at: number) {
+    tweening = false;
+    displayElapsed = at;
+    lastBase = at;
+    lastBaseAt = now();
+  }
+
+  // Track the last value seen from the backend so per-frame updates do not
+  // retrigger the effect.
+  let lastProp = elapsed;
   $effect(() => {
-    const now = typeof performance !== "undefined" ? performance.now() : 0;
-    const delta = elapsed - lastBase;
-    if (Math.abs(delta) > 1.2) {
-      displayElapsed = elapsed;
-      lastBase = elapsed;
-      lastBaseAt = now;
-    } else if (Math.abs(delta) > 0.001) {
-      lastBase = elapsed;
-      lastBaseAt = now;
-    }
+    const target = elapsed;
+    if (target === lastProp) return;
+    const jumped = Math.abs(target - lastProp) > JUMP_SECS;
+    lastProp = target;
+    if (jumped) startTween(target);
+    else stopTween(target);
   });
 
   function tick() {
-    if (playing && duration > 0) {
-      const now = typeof performance !== "undefined" ? performance.now() : 0;
-      const dt = (now - lastBaseAt) / 1000;
+    if (tweening) {
+      const p = Math.min(1, (now() - tweenStart) / TWEEN_MS);
+      const eased = 1 - Math.pow(1 - p, 3);
+      if (p >= 1) {
+        stopTween(tweenTo);
+      } else {
+        displayElapsed = tweenFrom + (tweenTo - tweenFrom) * eased;
+      }
+    } else if (playing && duration > 0) {
+      const dt = (now() - lastBaseAt) / 1000;
       // Advance at the playback rate so the bar moves at the real (speed-scaled)
       // media time. Without this, 2x audio would make the bar lag behind.
       let next = lastBase + dt * (speed || 1);
@@ -83,23 +118,24 @@
     displayElapsed = v * duration;
   }
 
+  /** Commit a user seek: snap the bar there and keep polls from re-animating. */
+  function commitSeek(secs: number) {
+    stopTween(secs);
+    lastProp = secs;
+  }
+
   function onPointerUp(e: PointerEvent) {
     if (!dragging) return;
     dragging = false;
-    const v = pctFromEvent(e);
-    const secs = v * duration;
-    displayElapsed = secs;
-    lastBase = secs;
-    lastBaseAt = typeof performance !== "undefined" ? performance.now() : 0;
+    const secs = pctFromEvent(e) * duration;
+    commitSeek(secs);
     onseek(secs);
   }
 
   function onClick(e: MouseEvent) {
     if (duration <= 0) return;
     const secs = pctFromEvent(e) * duration;
-    displayElapsed = secs;
-    lastBase = secs;
-    lastBaseAt = typeof performance !== "undefined" ? performance.now() : 0;
+    commitSeek(secs);
     onseek(secs);
   }
 

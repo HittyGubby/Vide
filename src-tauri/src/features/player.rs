@@ -301,13 +301,30 @@ impl PlayerManager {
         Ok(value)
     }
 
+    /// Send a command and require mpv to report success.
+    ///
+    /// `ipc_command` only reports transport failures, but mpv also answers
+    /// with an *error payload* (e.g. `property unavailable` while it is still
+    /// opening a file, or `error running command` when a command is rejected).
+    /// Treating those as success is what made startup resume start from 0: the
+    /// readiness probe looked "ok" before mpv was ready and the seek was then
+    /// rejected. Every control command goes through here instead.
+    async fn ipc_command_ok(&self, command: serde_json::Value) -> Result<serde_json::Value, String> {
+        let value = self.ipc_command(command).await?;
+        match value.get("error").and_then(|e| e.as_str()) {
+            Some("success") => Ok(value),
+            Some(e) => Err(format!("mpv error: {e}")),
+            None => Err("mpv response has no error field".to_string()),
+        }
+    }
+
     /// Query the current duration (seconds) from mpv.
     async fn fetch_duration(&self) -> Option<f64> {
         if self.ipc_sock.is_none() {
             return None;
         }
         match self
-            .ipc_command(serde_json::json!(["get_property", "duration"]))
+            .ipc_command_ok(serde_json::json!(["get_property", "duration"]))
             .await
         {
             Ok(v) => v.get("data").and_then(|d| d.as_f64()),
@@ -324,7 +341,7 @@ impl PlayerManager {
             return None;
         }
         match self
-            .ipc_command(serde_json::json!(["get_property", "time-pos"]))
+            .ipc_command_ok(serde_json::json!(["get_property", "time-pos"]))
             .await
         {
             Ok(v) => v.get("data").and_then(|d| d.as_f64()),
@@ -340,13 +357,65 @@ impl PlayerManager {
         if position_secs < 0.0 {
             return Err("negative position".to_string());
         }
-        self.ipc_command(serde_json::json!(["seek", position_secs, "absolute"]))
+        self.ipc_command_ok(serde_json::json!(["seek", position_secs, "absolute"]))
             .await
             .map(|_| ())?;
         // Keep the frontend position in sync immediately so the progress
         // bar does not snap back to the pre-seek time.
         self.elapsed = position_secs;
         Ok(())
+    }
+
+    /// Seek to `position_secs` once mpv is actually able to accept it.
+    ///
+    /// Right after spawn the IPC socket exists but mpv has not loaded the file
+    /// yet: `time-pos` answers "property unavailable" and a `seek` sent at that
+    /// point is rejected outright. Poll `time-pos` until it is answerable, then
+    /// retry the seek until mpv accepts it.
+    async fn seek_when_ready(&mut self, position_secs: f64) -> Result<(), String> {
+        if self.ipc_sock.is_none() {
+            // Pipe mode has no IPC socket at all; seeking is impossible.
+            return Err("no IPC socket for this stream".to_string());
+        }
+        // Wait for mpv to finish opening the file (bounded to ~5s).
+        for _ in 0..100 {
+            if self.fetch_time_pos().await.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let mut last_err = String::from("seek was never applied");
+        for _ in 0..5 {
+            match self.seek(position_secs).await {
+                Ok(()) => {
+                    // mpv answers the command before the new position is
+                    // actually reported. Read it back, otherwise the next
+                    // status poll returns the pre-seek time and the progress
+                    // bar visibly jumps backwards and then forwards again.
+                    let mut previous: Option<f64> = None;
+                    for _ in 0..10 {
+                        if let Some(t) = self.fetch_time_pos().await {
+                            if (t - position_secs).abs() <= 1.5 {
+                                self.elapsed = t;
+                                return Ok(());
+                            }
+                            // The position stopped moving: mpv settled
+                            // elsewhere (e.g. the target was past the end).
+                            if previous.is_some_and(|p| (p - t).abs() < 0.05) {
+                                self.elapsed = t;
+                                return Ok(());
+                            }
+                            previous = Some(t);
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    last_err = "seek was never reflected in time-pos".to_string();
+                }
+                Err(e) => last_err = e,
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Err(last_err)
     }
 
     /// Set playback speed (rate). 1.0 = normal.
@@ -440,21 +509,19 @@ impl PlayerManager {
     /// instead of starting from 0.
     pub async fn play_song_id(&mut self, id: &str, position_secs: Option<f64>) -> Result<PlaybackStatus, String> {
         let descriptor = self.descriptor_for(&SongId(id.to_string())).await?;
-        let status = self.play(&descriptor).await?;
+        self.play(&descriptor).await?;
         if let Some(pos) = position_secs {
             if pos > 0.0 {
-                // Give mpv a moment to create the IPC socket before seeking.
-                for _ in 0..20 {
-                    if self.ipc_sock.is_some() && self.ipc_command(serde_json::json!(["get_property", "time-pos"])).await.is_ok() {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                // A failed resume must not fail the whole play request — warn
+                // and keep playing from the start instead.
+                if let Err(e) = self.seek_when_ready(pos).await {
+                    warn!("resume seek to {pos}s failed: {e}");
                 }
-                let _ = self.seek(pos).await;
-                self.elapsed = pos;
             }
         }
-        Ok(status)
+        // Build the status *after* the seek so the frontend is told the resume
+        // position instead of 0 (which made the progress bar snap back).
+        Ok(self.status())
     }
 
     /// Set the play order mode.
