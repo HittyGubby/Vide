@@ -1,0 +1,16 @@
+[Unit]
+Description=Vide music server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vide
+ExecStart=/opt/vide/vide-server --data-dir %h/.local/share/vide --bind 0.0.0.0:8080 --web-dir /opt/vide/web --public-media
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

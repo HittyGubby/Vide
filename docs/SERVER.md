@@ -73,6 +73,31 @@ vide-server \
 
 公网部署必须使用可信证书；自签证书需要客户端信任。
 
+## systemd 用户服务
+
+推荐用当前用户运行，避免服务端生成的数据库/缓存变成 root 所有。
+
+安装：
+
+```bash
+sudo mkdir -p /opt/vide
+sudo cp vide-server /opt/vide/vide-server
+sudo cp -a build /opt/vide/web
+mkdir -p ~/.config/systemd/user
+cp deploy/vide.service ~/.config/systemd/user/vide.service
+systemctl --user daemon-reload
+systemctl --user enable --now vide.service
+loginctl enable-linger "$USER"
+```
+
+服务文件见 [deploy/vide.service](../deploy/vide.service)。
+
+查看日志：
+
+```bash
+journalctl --user -u vide.service -f
+```
+
 ## 数据目录
 
 ```text
