@@ -271,6 +271,7 @@ impl PlayerManager {
     }
 
     /// Send a JSON-RPC command to mpv's IPC socket and return the raw response.
+    #[cfg(unix)]
     async fn ipc_command(&self, command: serde_json::Value) -> Result<serde_json::Value, String> {
         let sock = self
             .ipc_sock
@@ -327,6 +328,11 @@ impl PlayerManager {
             .map_err(|e| format!("IPC parse error: {e} ({text})"))?;
 
         Ok(value)
+    }
+
+    #[cfg(not(unix))]
+    async fn ipc_command(&self, _command: serde_json::Value) -> Result<serde_json::Value, String> {
+        Err("mpv IPC is not supported on this platform".to_string())
     }
 
     /// Send a command and require mpv to report success.
