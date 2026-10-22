@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { Link, LogOut, Loader } from "lucide-svelte";
+  import { player } from "$lib/stores/player.svelte";
   import {
     connectRemote,
     disconnectRemote,
@@ -31,6 +32,7 @@
   function chooseTarget(next: PlaybackTarget) {
     target = next;
     setPlaybackTarget(next);
+    player.restartStatusUpdates();
   }
 
   async function connect() {

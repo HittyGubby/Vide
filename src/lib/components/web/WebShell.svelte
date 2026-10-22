@@ -56,6 +56,7 @@
     await player.stop();
     target = next;
     setPlaybackTarget(next);
+    player.restartStatusUpdates();
   }
 
   async function logout() {

@@ -477,6 +477,21 @@ class PlayerStore {
     }
   }
 
+  stopStatusUpdates() {
+    if (this.statusTimer) {
+      clearInterval(this.statusTimer);
+      this.statusTimer = undefined;
+    }
+    this.statusStream?.();
+    this.statusStream = null;
+    this.updatesStarted = false;
+  }
+
+  restartStatusUpdates() {
+    this.stopStatusUpdates();
+    this.startStatusUpdates();
+  }
+
   startStatusUpdates() {
     if (this.updatesStarted || isBrowserClient()) return;
     this.updatesStarted = true;
