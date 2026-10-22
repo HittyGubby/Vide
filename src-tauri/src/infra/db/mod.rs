@@ -1005,6 +1005,14 @@ impl Database {
                 if s.desktop_lyrics_position.is_empty() {
                     s.desktop_lyrics_position = defaults.desktop_lyrics_position;
                 }
+                // Migrate starter stylesheets that still document the old
+                // language-keyed classes. Custom user CSS is left alone.
+                if s.desktop_lyrics_css.contains("class=\"english\"") {
+                    s.desktop_lyrics_css = defaults.desktop_lyrics_css;
+                }
+                if s.detail_lyrics_css.contains("class=\"english\"") {
+                    s.detail_lyrics_css = defaults.detail_lyrics_css;
+                }
                 Ok(s)
             }
             None => Ok(defaults),
