@@ -448,7 +448,9 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
     case "set_speed":
       return remoteRequest<T>("POST", "/api/v1/player/speed", { speed: args.speed });
     case "set_play_mode":
-      return undefined as T;
+      return remoteRequest<T>("POST", "/api/v1/player/mode", {
+        mode: args.mode,
+      });
     case "get_app_settings":
     case "set_app_settings":
     case "get_client_state":
@@ -548,11 +550,6 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
     }
     case "import_songs":
       return remoteRequest<T>("POST", "/api/v1/import/songs", args.songs);
-    case "search_songs":
-      return remoteRequest<T>(
-        "GET",
-        "/api/v1/search?q=" + encodeURIComponent(String(args.query ?? "")),
-      );
     case "play_online_results":
       return remoteRequest<T>("POST", "/api/v1/player/play-online", {
         results: args.results,

@@ -537,6 +537,24 @@ fn parse_range(value: &str) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
+#[derive(Deserialize)]
+struct PlayModeRequest {
+    mode: crate::features::player::PlayMode,
+}
+
+async fn set_play_mode(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<PlayModeRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let mut player = state.app.player.lock().await;
+    player.set_play_mode(request.mode);
+    let status = player.status();
+    sse::publish_status(&state.sse_tx, &status);
+    Ok(Json(serde_json::to_value(status).unwrap_or_default()))
+}
+
 async fn player_status(State(state): State<ServerState>) -> Json<Value> {
     let mut player = state.app.player.lock().await;
     player.check_alive().await;
@@ -1507,6 +1525,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/media/:id", get(media))
         .route("/api/v1/download/:id", get(download_song))
         .route("/api/v1/player/status", get(player_status))
+        .route("/api/v1/player/mode", post(set_play_mode))
         .route("/api/v1/player/stream", get(player_stream))
         .route("/api/v1/player/play", post(player_play))
         .route("/api/v1/player/queue", get(player_queue_get).post(player_queue_set))
@@ -1617,6 +1636,7 @@ pub async fn run_from_args(args: Vec<String>) -> Result<(), String> {
         loop {
             ticker.tick().await;
             let mut player = tick_player.lock().await;
+            player.check_alive().await;
             player.refresh().await;
             let status = player.status();
             if status.state != crate::features::player::PlaybackState::Stopped {

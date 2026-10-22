@@ -94,8 +94,11 @@ class PlayerStore {
 
   /** Push the current play mode to the Rust backend (which owns sequencing). */
   syncPlayMode() {
+    if (isBrowserClient()) return;
     try {
-      void invoke("set_play_mode", { mode: { ...this.playMode } });
+      void statusInvoke("set_play_mode", { mode: { ...this.playMode } }).catch((e) => {
+        console.error("set_play_mode error:", e);
+      });
     } catch (e) {
       console.error("set_play_mode error:", e);
     }
@@ -292,7 +295,26 @@ class PlayerStore {
     try {
       if (isRemoteClient() || isBrowserClient()) {
         if (this.queue.length === 0) return false;
-        const next = (Math.max(this.currentIndex, -1) + 1) % this.queue.length;
+        const current = this.currentIndex >= 0 ? this.currentIndex : 0;
+        if (this.playMode.single) {
+          await this.playId(this.queue[current].id);
+          return true;
+        }
+        let next = current;
+        if (this.playMode.shuffle && this.queue.length > 1) {
+          do {
+            next = Math.floor(Math.random() * this.queue.length);
+          } while (next === current);
+        } else {
+          next = current + (this.playMode.reverse ? -1 : 1);
+          if (next < 0 || next >= this.queue.length) {
+            if (!this.playMode.repeat) {
+              await this.stop();
+              return false;
+            }
+            next = this.playMode.reverse ? this.queue.length - 1 : 0;
+          }
+        }
         await this.playId(this.queue[next].id);
         return true;
       }
@@ -344,6 +366,8 @@ class PlayerStore {
         if (!media) throw new Error("browser media URL unavailable");
         const audio = this.browserAudioElement();
         this.mediaId = id;
+        const queueIndex = this.queue.findIndex((item) => item.id === id);
+        if (queueIndex >= 0) this.currentIndex = queueIndex;
         this.elapsed = 0;
         this.duration = 0;
         audio.src = media.url;
@@ -495,6 +519,7 @@ class PlayerStore {
   startStatusUpdates() {
     if (this.updatesStarted || isBrowserClient()) return;
     this.updatesStarted = true;
+    this.syncPlayMode();
     void this.poll();
     if (isRemoteClient() || (isTauri && !isRemoteMode())) {
       this.statusTimer = setInterval(() => void this.poll(), 1000);
@@ -539,10 +564,9 @@ class PlayerStore {
       // the resulting jump) on every track change.
       this.duration = status.duration_secs ?? this.duration;
 
-      // The media finished naturally — advance to the next track per the
-      // current play mode. With no queue there is nowhere to go, so leave
-      // the state alone instead of asking the backend every second.
-      if (status.state === "Ended" && this.queue.length > 0) {
+      // A remote client uses the local mpv directly, so its local queue is
+      // intentionally empty. Let the frontend queue handle the natural end.
+      if (status.state === "Ended" && isRemoteClient() && this.queue.length > 0) {
         void this.playNext(true);
       }
 
