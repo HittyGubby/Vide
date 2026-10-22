@@ -1,9 +1,11 @@
 use sea_orm::{
-    sea_query::OnConflict, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr,
-    EntityTrait, Order, QueryFilter as _, QueryOrder, QuerySelect, Schema, Set, Statement,
+    sea_query::OnConflict, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
+    DbErr, EntityTrait, Order, PaginatorTrait, QueryFilter as _, QueryOrder, QuerySelect, Schema,
+    Set, Statement,
 };
 use serde_json::Value;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::models::{
     cache::CacheEntry as DomainCacheEntry,
@@ -134,9 +136,18 @@ impl Database {
             .exec(&self.conn)
             .await?;
         for path in &song.paths {
+            let path_str = path.to_string_lossy().to_string();
+            // A path belongs to exactly one song. If a file at this path was
+            // re-indexed under a new id, move the path instead of leaving two
+            // songs claiming it.
+            song_path::Entity::delete_many()
+                .filter(song_path::Column::Path.eq(&path_str))
+                .filter(song_path::Column::SongId.ne(&song.id.0))
+                .exec(&self.conn)
+                .await?;
             song_path::Entity::insert(song_path::ActiveModel {
                 song_id: Set(song.id.0.clone()),
-                path: Set(path.to_string_lossy().to_string()),
+                path: Set(path_str),
             })
             .exec(&self.conn)
             .await?;
@@ -175,54 +186,133 @@ impl Database {
         Ok(())
     }
 
-    /// Delete every song that has at least one local path.
+    /// Remove path rows whose file no longer exists, then drop songs that have
+    /// no paths, no sources and no user tags left.
     ///
-    /// Used by the full-reshuffle library scan: the scan *replaces* the local
-    /// result set rather than merging with stale entries, so songs that no
-    /// longer exist on disk are removed too. Online-only songs (imported) are
-    /// kept.
-    pub async fn clear_local_songs(&self) -> Result<u64, DbErr> {
-        use entity::{song, song_path, song_source, tag, cache_entry, playlist_entry};
+    /// This replaces the old "delete every local song before rescanning"
+    /// behaviour, which also wiped tags, playlist entries and cache rows for
+    /// files that still existed. Songs that only lost a path keep their tags
+    /// and can be re-linked when a drive is mounted again.
+    ///
+    /// Returns a pair: stale paths removed, then empty songs removed.
+    pub async fn prune_missing_paths(&self, excludes: &[std::path::PathBuf]) -> Result<(u64, u64), DbErr> {
+        use entity::{song_path, song_source};
 
-        // Collect the ids that have a local path.
-        let rows = song_path::Entity::find()
-            .select_only()
-            .column(song_path::Column::SongId)
-            .into_tuple::<String>()
-            .all(&self.conn)
+        let rows = song_path::Entity::find().all(&self.conn).await?;
+        let mut removed_paths = 0u64;
+        // Songs whose path was removed because the user explicitly excluded
+        // it are removed as a whole (including tags); a merely missing drive
+        // keeps tagged songs around for re-linking.
+        let mut excluded_songs = std::collections::HashSet::new();
+        for row in rows {
+            let path = Path::new(&row.path);
+            let excluded = excludes.iter().any(|exclude| path.starts_with(exclude));
+            if excluded || !path.exists() {
+                song_path::Entity::delete_many()
+                    .filter(song_path::Column::SongId.eq(&row.song_id))
+                    .filter(song_path::Column::Path.eq(&row.path))
+                    .exec(&self.conn)
+                    .await?;
+                if excluded {
+                    excluded_songs.insert(row.song_id.clone());
+                }
+                removed_paths += 1;
+            }
+        }
+
+        let mut removed_ids = std::collections::HashSet::new();
+        let mut removed_songs = 0u64;
+
+        // Explicitly excluded songs: remove even when they still have tags.
+        for id in excluded_songs {
+            let has_path = song_path::Entity::find()
+                .filter(song_path::Column::SongId.eq(&id))
+                .count(&self.conn)
+                .await?
+                > 0;
+            let has_source = song_source::Entity::find()
+                .filter(song_source::Column::SongId.eq(&id))
+                .count(&self.conn)
+                .await?
+                > 0;
+            if has_path || has_source {
+                continue;
+            }
+            self.delete_song_cascade(&id).await?;
+            removed_ids.insert(id);
+            removed_songs += 1;
+        }
+
+        // Songs that lost their last path and have no source/tag. One query
+        // instead of three count queries per song keeps the startup scan light.
+        let statement = Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT song_id FROM songs WHERE NOT EXISTS (SELECT 1 FROM song_paths WHERE song_paths.song_id = songs.song_id) AND NOT EXISTS (SELECT 1 FROM song_sources WHERE song_sources.song_id = songs.song_id) AND NOT EXISTS (SELECT 1 FROM tags WHERE tags.song_id = songs.song_id)".to_string(),
+        );
+        let orphan_rows = self.conn.query_all(statement).await?;
+        for row in orphan_rows {
+            let id: String = row.try_get_by_index(0)?;
+            if removed_ids.contains(&id) {
+                continue;
+            }
+            self.delete_song_cascade(&id).await?;
+            removed_songs += 1;
+        }
+
+        Ok((removed_paths, removed_songs))
+    }
+
+
+
+    /// Delete a song and every association row that points at it.
+    async fn delete_song_cascade(&self, id: &str) -> Result<(), DbErr> {
+        use entity::{cache_entry, playlist_entry, song, song_path, song_source, tag};
+        song_path::Entity::delete_many()
+            .filter(song_path::Column::SongId.eq(id))
+            .exec(&self.conn)
             .await?;
-        if rows.is_empty() {
-            return Ok(0);
-        }
+        song_source::Entity::delete_many()
+            .filter(song_source::Column::SongId.eq(id))
+            .exec(&self.conn)
+            .await?;
+        tag::Entity::delete_many()
+            .filter(tag::Column::SongId.eq(id))
+            .exec(&self.conn)
+            .await?;
+        playlist_entry::Entity::delete_many()
+            .filter(playlist_entry::Column::SongId.eq(id))
+            .exec(&self.conn)
+            .await?;
+        cache_entry::Entity::delete_many()
+            .filter(cache_entry::Column::SongId.eq(id))
+            .exec(&self.conn)
+            .await?;
+        song::Entity::delete_many()
+            .filter(song::Column::SongId.eq(id))
+            .exec(&self.conn)
+            .await?;
+        Ok(())
+    }
 
-        let ids: Vec<String> = rows;
-        for id in &ids {
-            song_path::Entity::delete_many()
-                .filter(song_path::Column::SongId.eq(id))
-                .exec(&self.conn)
-                .await?;
-            song_source::Entity::delete_many()
-                .filter(song_source::Column::SongId.eq(id))
-                .exec(&self.conn)
-                .await?;
-            tag::Entity::delete_many()
-                .filter(tag::Column::SongId.eq(id))
-                .exec(&self.conn)
-                .await?;
-            cache_entry::Entity::delete_many()
-                .filter(cache_entry::Column::SongId.eq(id))
-                .exec(&self.conn)
-                .await?;
-            playlist_entry::Entity::delete_many()
-                .filter(playlist_entry::Column::SongId.eq(id))
-                .exec(&self.conn)
-                .await?;
-            song::Entity::delete_many()
-                .filter(song::Column::SongId.eq(id))
-                .exec(&self.conn)
-                .await?;
-        }
-        Ok(ids.len() as u64)
+    /// Load every local path → song id in one query (used by the scanner to
+    /// avoid a database round-trip for every already-indexed file).
+    pub async fn all_song_paths(&self) -> Result<HashMap<String, SongId>, DbErr> {
+        use entity::song_path;
+        let rows = song_path::Entity::find().all(&self.conn).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.path, SongId(row.song_id)))
+            .collect())
+    }
+
+    /// Find the song that currently owns a local path.
+    pub async fn find_song_id_by_path(&self, path: &str) -> Result<Option<SongId>, DbErr> {
+        use entity::song_path;
+        let row = song_path::Entity::find()
+            .filter(song_path::Column::Path.eq(path))
+            .one(&self.conn)
+            .await?;
+        Ok(row.map(|row| SongId(row.song_id)))
     }
 
     /// Retrieve a single song by ID, returning None if not found.
@@ -293,6 +383,77 @@ impl Database {
         }))
     }
 
+
+    /// Load tags, sources and paths for a batch of songs.
+    ///
+    /// The list/search commands used to return songs with these fields empty
+    /// (only `get_song` loaded them), which broke local-file detection in the
+    /// UI — "details" saw no paths and treated a local file as an unplayable
+    /// online entry. Three batched queries keep this cheap for the full list.
+    async fn attach_associations(&self, songs: &mut [DomainSong]) -> Result<(), DbErr> {
+        use entity::{song_path, song_source, tag};
+
+        if songs.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = songs.iter().map(|song| song.id.0.clone()).collect();
+        // SQLite has a bound-parameter limit; chunk the id lists so a very
+        // large library cannot overflow it.
+        const CHUNK: usize = 500;
+
+        let mut paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for chunk in ids.chunks(CHUNK) {
+            for row in song_path::Entity::find()
+                .filter(song_path::Column::SongId.is_in(chunk.to_vec()))
+                .all(&self.conn)
+                .await?
+            {
+                paths.entry(row.song_id).or_default().push(PathBuf::from(row.path));
+            }
+        }
+
+        let mut sources: HashMap<String, Vec<Source>> = HashMap::new();
+        for chunk in ids.chunks(CHUNK) {
+            for row in song_source::Entity::find()
+                .filter(song_source::Column::SongId.is_in(chunk.to_vec()))
+                .all(&self.conn)
+                .await?
+            {
+                sources.entry(row.song_id).or_default().push(Source {
+                    platform: row.platform,
+                    id: row.source_id,
+                });
+            }
+        }
+
+        let mut tags: HashMap<String, Vec<Tag>> = HashMap::new();
+        for chunk in ids.chunks(CHUNK) {
+            for row in tag::Entity::find()
+                .filter(tag::Column::SongId.is_in(chunk.to_vec()))
+                .all(&self.conn)
+                .await?
+            {
+                tags.entry(row.song_id).or_default().push(Tag {
+                    namespace: row.namespace,
+                    value: row.value,
+                });
+            }
+        }
+
+        for song in songs.iter_mut() {
+            if let Some(found) = paths.remove(&song.id.0) {
+                song.paths = found;
+            }
+            if let Some(found) = sources.remove(&song.id.0) {
+                song.sources = found;
+            }
+            if let Some(found) = tags.remove(&song.id.0) {
+                song.tags = found;
+            }
+        }
+        Ok(())
+    }
+
     /// Query songs with an optional filter.
     pub async fn query_songs(&self, filter: &QueryFilter) -> Result<Vec<DomainSong>, DbErr> {
         use entity::song;
@@ -323,10 +484,17 @@ impl Database {
 
         let db_songs = select.all(&self.conn).await?;
 
-        let songs: Vec<DomainSong> = db_songs
+        let mut songs: Vec<DomainSong> = db_songs
             .into_iter()
             .map(|s| {
-                let metadata = serde_json::from_str(&s.metadata_json).unwrap_or_default();
+                let mut metadata: SongMetadata =
+                    serde_json::from_str(&s.metadata_json).unwrap_or_default();
+                if metadata.duration.is_none() {
+                    metadata.duration = s.duration;
+                }
+                if metadata.added_time.is_none() {
+                    metadata.added_time = s.added_time;
+                }
                 DomainSong {
                     id: SongId(s.song_id),
                     title: s.title,
@@ -340,7 +508,69 @@ impl Database {
             })
             .collect();
 
+        self.attach_associations(&mut songs).await?;
         Ok(songs)
+    }
+
+
+    /// Distinct values of a text-searchable field, for query autocomplete.
+    /// Field names are matched against a fixed list; the prefix is always a
+    /// bound parameter.
+    pub async fn query_field_values(
+        &self,
+        field: &str,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, DbErr> {
+        let sql = match field {
+            "id" => "SELECT DISTINCT song_id AS value FROM songs WHERE song_id LIKE ? ORDER BY song_id LIMIT ?",
+            "title" => "SELECT DISTINCT title AS value FROM songs WHERE title LIKE ? ORDER BY title LIMIT ?",
+            "artist" => "SELECT DISTINCT artist AS value FROM songs WHERE artist LIKE ? ORDER BY artist LIMIT ?",
+            "album" => "SELECT DISTINCT album AS value FROM songs WHERE album LIKE ? ORDER BY album LIMIT ?",
+            "source" => "SELECT DISTINCT platform AS value FROM song_sources WHERE platform LIKE ? ORDER BY platform LIMIT ?",
+            "source_id" => "SELECT DISTINCT source_id AS value FROM song_sources WHERE source_id LIKE ? ORDER BY source_id LIMIT ?",
+            "path" => "SELECT DISTINCT path AS value FROM song_paths WHERE path LIKE ? ORDER BY path LIMIT ?",
+            "tags" => "SELECT DISTINCT namespace || ':' || value AS value FROM tags WHERE namespace || ':' || value LIKE ? ORDER BY value LIMIT ?",
+            "file_name" => "SELECT DISTINCT json_extract(metadata_json, '$.file_name') AS value FROM songs WHERE json_extract(metadata_json, '$.file_name') LIKE ? ORDER BY value LIMIT ?",
+            "notes" => "SELECT DISTINCT json_extract(metadata_json, '$.notes') AS value FROM songs WHERE json_extract(metadata_json, '$.notes') LIKE ? ORDER BY value LIMIT ?",
+            "added_time" => "SELECT DISTINCT added_time AS value FROM songs WHERE added_time LIKE ? ORDER BY value LIMIT ?",
+            _ => return Ok(Vec::new()),
+        };
+        let like = format!("%{}%", prefix);
+        let statement = Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            sql,
+            vec![like.into(), (limit as i64).into()],
+        );
+        let rows = self.conn.query_all(statement).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.try_get_by_index::<String>(0).ok())
+            .filter(|value| !value.trim().is_empty())
+            .collect())
+    }
+
+    /// Distinct values for a tag namespace, for namespace:value autocomplete.
+    pub async fn tag_values(
+        &self,
+        namespace: &str,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, DbErr> {
+        let statement = Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT DISTINCT value FROM tags WHERE namespace = ? AND value LIKE ? ORDER BY value LIMIT ?",
+            vec![
+                namespace.to_string().into(),
+                format!("%{}%", prefix).into(),
+                (limit as i64).into(),
+            ],
+        );
+        let rows = self.conn.query_all(statement).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.try_get_by_index::<String>(0).ok())
+            .collect())
     }
 
     /// List songs in "My Library" — those with at least one local path
@@ -393,11 +623,17 @@ impl Database {
             .all(&self.conn)
             .await?;
 
-        Ok(db_songs
+        let mut songs: Vec<DomainSong> = db_songs
             .into_iter()
             .map(|s| {
-                let metadata =
+                let mut metadata: SongMetadata =
                     serde_json::from_str(&s.metadata_json).unwrap_or_default();
+                if metadata.duration.is_none() {
+                    metadata.duration = s.duration;
+                }
+                if metadata.added_time.is_none() {
+                    metadata.added_time = s.added_time;
+                }
                 DomainSong {
                     id: SongId(s.song_id),
                     title: s.title,
@@ -409,7 +645,10 @@ impl Database {
                     metadata,
                 }
             })
-            .collect())
+            .collect();
+
+        self.attach_associations(&mut songs).await?;
+        Ok(songs)
     }
 
     // ── Playlists ─────────────────────────────────────────────────
@@ -845,6 +1084,190 @@ mod tests {
         assert_eq!(loaded.tags.len(), 1);
         assert_eq!(loaded.sources.len(), 1);
         assert_eq!(loaded.paths.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_and_library_lists_attach_associations() {
+        let db = Database::open_in_memory().await.unwrap();
+        let song = DomainSong {
+            id: SongId("assoc1".to_string()),
+            title: "Local Track".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            tags: vec![Tag {
+                namespace: "mood".to_string(),
+                value: "dark".to_string(),
+            }],
+            sources: vec![Source {
+                platform: "local".to_string(),
+                id: "assoc1".to_string(),
+            }],
+            paths: vec![std::path::PathBuf::from("/music/assoc1.ogg")],
+            metadata: SongMetadata::default(),
+        };
+        db.upsert_song(&song).await.unwrap();
+
+        for songs in [
+            db.query_songs(&QueryFilter::default()).await.unwrap(),
+            db.list_library_songs().await.unwrap(),
+        ] {
+            assert_eq!(songs.len(), 1);
+            assert_eq!(songs[0].paths, song.paths);
+            assert_eq!(songs[0].sources.len(), 1);
+            assert_eq!(songs[0].tags.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_path_belongs_to_one_song() {
+        let db = Database::open_in_memory().await.unwrap();
+        let path = std::path::PathBuf::from("/music/shared.mp3");
+        let make = |id: &str| DomainSong {
+            id: SongId(id.to_string()),
+            title: id.to_string(),
+            artist: String::new(),
+            album: String::new(),
+            tags: vec![],
+            sources: vec![],
+            paths: vec![path.clone()],
+            metadata: SongMetadata::default(),
+        };
+        db.upsert_song(&make("old")).await.unwrap();
+        db.upsert_song(&make("new")).await.unwrap();
+
+        assert_eq!(
+            db.find_song_id_by_path("/music/shared.mp3").await.unwrap(),
+            Some(SongId("new".to_string()))
+        );
+        let old = db.get_song(&SongId("old".to_string())).await.unwrap().unwrap();
+        assert!(old.paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_prune_missing_paths_keeps_metadata() {
+        let db = Database::open_in_memory().await.unwrap();
+
+        let existing_path = std::env::temp_dir().join(format!(
+            "vide-prune-test-{}.mp3",
+            std::process::id()
+        ));
+        std::fs::write(&existing_path, b"not really audio").unwrap();
+
+        let make_song = |id: &str, paths: Vec<std::path::PathBuf>, tags: Vec<Tag>| DomainSong {
+            id: SongId(id.to_string()),
+            title: id.to_string(),
+            artist: String::new(),
+            album: String::new(),
+            tags,
+            sources: vec![],
+            paths,
+            metadata: SongMetadata::default(),
+        };
+
+        db.upsert_song(&make_song("keep", vec![existing_path.clone()], vec![]))
+            .await
+            .unwrap();
+        db.upsert_song(&make_song(
+            "orphan",
+            vec![std::path::PathBuf::from("/definitely/missing/orphan.mp3")],
+            vec![],
+        ))
+        .await
+        .unwrap();
+        db.upsert_song(&make_song(
+            "tagged-ghost",
+            vec![std::path::PathBuf::from("/definitely/missing/ghost.mp3")],
+            vec![Tag {
+                namespace: "mood".to_string(),
+                value: "dark".to_string(),
+            }],
+        ))
+        .await
+        .unwrap();
+
+        let (paths_removed, songs_removed) = db.prune_missing_paths(&[]).await.unwrap();
+        assert_eq!(paths_removed, 2);
+        assert_eq!(songs_removed, 1);
+
+        let keep = db.get_song(&SongId("keep".to_string())).await.unwrap().unwrap();
+        assert_eq!(keep.paths, vec![existing_path.clone()]);
+
+        assert!(db
+            .get_song(&SongId("orphan".to_string()))
+            .await
+            .unwrap()
+            .is_none());
+
+        let ghost = db
+            .get_song(&SongId("tagged-ghost".to_string()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ghost.paths.is_empty());
+        assert_eq!(ghost.tags.len(), 1);
+
+        let _ = std::fs::remove_file(existing_path);
+    }
+
+    #[tokio::test]
+    async fn test_excluded_paths_remove_tagged_songs() {
+        let db = Database::open_in_memory().await.unwrap();
+        let song = DomainSong {
+            id: SongId("excluded".to_string()),
+            title: "Excluded".to_string(),
+            artist: String::new(),
+            album: String::new(),
+            tags: vec![Tag {
+                namespace: "mood".to_string(),
+                value: "dark".to_string(),
+            }],
+            sources: vec![],
+            paths: vec![std::path::PathBuf::from(
+                "/tmp/vide-excluded-dir/song.mp3",
+            )],
+            metadata: SongMetadata::default(),
+        };
+        db.upsert_song(&song).await.unwrap();
+
+        let (paths, songs) = db
+            .prune_missing_paths(&[std::path::PathBuf::from("/tmp/vide-excluded-dir")])
+            .await
+            .unwrap();
+        assert_eq!(paths, 1);
+        assert_eq!(songs, 1);
+        assert!(db
+            .get_song(&SongId("excluded".to_string()))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_field_and_tag_value_queries() {
+        let db = Database::open_in_memory().await.unwrap();
+        let song = DomainSong {
+            id: SongId("values1".to_string()),
+            title: "Hello World".to_string(),
+            artist: "Björk".to_string(),
+            album: "Album".to_string(),
+            tags: vec![Tag {
+                namespace: "genre".to_string(),
+                value: "Folk".to_string(),
+            }],
+            sources: vec![],
+            paths: vec![],
+            metadata: SongMetadata::default(),
+        };
+        db.upsert_song(&song).await.unwrap();
+
+        let titles = db.query_field_values("title", "Hello", 10).await.unwrap();
+        assert_eq!(titles, vec!["Hello World"]);
+
+        let artists = db.query_field_values("artist", "jörk", 10).await.unwrap();
+        assert_eq!(artists, vec!["Björk"]);
+
+        let tags = db.tag_values("genre", "fo", 10).await.unwrap();
+        assert_eq!(tags, vec!["Folk"]);
     }
 
     #[tokio::test]

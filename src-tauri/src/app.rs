@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use crate::features::network::NetworkManager;
 use crate::features::player::PlayerManager;
 use crate::features::plugin::PluginManager;
-use crate::infra::config::AppConfig;
+use crate::infra::config::{resolve_plugin_dir, AppConfig};
 use crate::infra::db::Database;
 
 /// Top-level application state shared across all Tauri commands.
@@ -39,6 +39,9 @@ impl AppState {
         // Load config first (before wrapping in Arc/Mutex) to read plugin_dir
         let app_config = AppConfig::load(&db).await.unwrap_or_default();
         let plugin_dir = resolve_plugin_dir(&app_config.plugin_dir);
+        if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
+            tracing::warn!("cannot create plugin dir {:?}: {e}", plugin_dir);
+        }
 
         let config = Arc::new(Mutex::new(app_config));
         let network = Arc::new(Mutex::new(NetworkManager::new()));
@@ -49,8 +52,8 @@ impl AppState {
             let pm = PluginManager::init(&plugin_dir, &db, 4).await;
             tracing::info!(
                 "Plugin system initialized: {} manifests, {} routes",
-                pm.manifests.len(),
-                pm.router.route_count()
+                pm.manifest_count(),
+                pm.router.lock().await.route_count()
             );
             Some(Arc::new(pm))
         } else {
@@ -59,7 +62,13 @@ impl AppState {
         };
 
         // The player owns the queue/sequencing and resolves streams on its own.
-        let player = Arc::new(Mutex::new(PlayerManager::new(Some(db.clone()), plugins.clone())));
+        // Restore the previous queue before the frontend can press next/prev:
+        // the startup auto-resume calls play_song without setting a queue, so
+        // without this next/prev used to be no-ops until a manual list click
+        // re-registered the queue.
+        let mut player_manager = PlayerManager::new(Some(db.clone()), plugins.clone());
+        player_manager.restore_queue().await;
+        let player = Arc::new(Mutex::new(player_manager));
 
         tracing::info!("AppState initialized");
 
@@ -73,69 +82,4 @@ impl AppState {
     }
 }
 
-/// Resolve the plugin directory to an absolute path that actually exists.
-///
-/// The configured value may be relative (SPEC default is `"plugins"`). In a
-/// packaged app the working directory is not the project root, so a relative
-/// `"plugins"` would resolve to a non-existent path and silently disable the
-/// whole plugin system. To keep plugins working in both dev and packaged
-/// builds we walk up from the executable's directory looking for a directory
-/// named like the configured one that contains at least one `manifest.json`.
-fn resolve_plugin_dir(configured: &Path) -> PathBuf {
-    // Absolute paths are used as-is.
-    if configured.is_absolute() {
-        return configured.to_path_buf();
-    }
 
-    // If it exists relative to the current working directory, use it.
-    if configured.exists() {
-        return configured.to_path_buf();
-    }
-
-    // Otherwise walk up from the executable's directory looking for a folder
-    // with a `manifest.json` (a real plugin directory).
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        for _ in 0..6 {
-            let candidate = dir.join(configured);
-            if candidate.join("manifest.json").exists()
-                || candidate.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false)
-            {
-                return candidate;
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
-
-    // Fall back to the configured relative path.
-    configured.to_path_buf()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_absolute_passthrough() {
-        let p = PathBuf::from("/abs/plugins");
-        assert_eq!(resolve_plugin_dir(&p), p);
-    }
-
-    #[test]
-    fn resolve_relative_finders_exists_dir() {
-        // A relative dir that exists from cwd is used directly.
-        let d = std::env::temp_dir().join("vide_plugin_test");
-        let _ = std::fs::create_dir_all(&d);
-        std::fs::write(d.join("manifest.json"), "{}").unwrap();
-        let resolved = resolve_plugin_dir(Path::new("vide_plugin_test"));
-        // The candidate must be an existing directory (either cwd-relative or
-        // found by walking up — either way it should not be the bare name).
-        assert!(resolved.as_os_str().to_string_lossy().contains("vide_plugin_test"));
-        let _ = std::fs::remove_dir_all(&d);
-    }
-}

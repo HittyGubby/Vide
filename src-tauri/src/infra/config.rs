@@ -1,6 +1,6 @@
 use sea_orm::DbErr;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::infra::db::Database;
 
@@ -13,6 +13,69 @@ pub struct AppConfig {
     pub concurrency_limits: HashMap<String, u32>,
 }
 
+/// Platform-aware default plugin directory.
+///
+/// Linux/macOS use the user config directory; Windows uses APPDATA. We keep
+/// the application name segment so the location is stable across launches.
+pub fn default_plugin_dir() -> PathBuf {
+    dirs::config_dir()
+        .map(|dir| dir.join("vide").join("plugins"))
+        .unwrap_or_else(|| PathBuf::from("plugins"))
+}
+
+/// Resolve a configured plugin directory.
+///
+/// Absolute paths are used as-is. A relative path is first looked up in the
+/// current working directory and then by walking up from cwd/executable (this
+/// keeps the repository plugins directory working when Tauri runs from
+/// src-tauri). Finally it resolves under the platform config directory.
+pub fn resolve_plugin_dir(configured: &Path) -> PathBuf {
+    if configured.is_absolute() {
+        return configured.to_path_buf();
+    }
+    if configured.exists() {
+        return configured.to_path_buf();
+    }
+
+    let mut starts: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            starts.push(parent.to_path_buf());
+        }
+    }
+
+    for start in starts {
+        let mut dir = start;
+        for _ in 0..8 {
+            let candidate = dir.join(configured);
+            let has_manifest = candidate.join("manifest.json").exists()
+                || candidate
+                    .read_dir()
+                    .map(|mut entries| {
+                        entries.any(|entry| {
+                            entry
+                                .map(|entry| entry.path().join("manifest.json").exists())
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+            if has_manifest {
+                return candidate;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+
+    dirs::config_dir()
+        .map(|dir| dir.join("vide").join(configured))
+        .unwrap_or_else(default_plugin_dir)
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         let mut limits = HashMap::new();
@@ -20,7 +83,7 @@ impl Default for AppConfig {
         Self {
             library_roots: Vec::new(),
             exclude_roots: Vec::new(),
-            plugin_dir: PathBuf::from("plugins"),
+            plugin_dir: default_plugin_dir(),
             concurrency_limits: limits,
         }
     }
@@ -86,5 +149,20 @@ impl AppConfig {
             .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_repository_plugins_from_cwd_or_parent() {
+        if !Path::new("../plugins").exists() && !Path::new("plugins").exists() {
+            return;
+        }
+        let resolved = resolve_plugin_dir(Path::new("plugins"));
+        assert!(resolved.ends_with("plugins"), "{resolved:?}");
+        assert!(resolved.join("ytdlp-adapter/manifest.json").exists());
     }
 }

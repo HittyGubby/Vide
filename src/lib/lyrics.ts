@@ -21,12 +21,12 @@ export const DEFAULT_DESKTOP_LYRICS_CSS = `/* 歌词区域 DOM 结构
   <div class="lyrics-viewport">                可视区：负责裁剪与自动滚动
     <div class="lyrics-lines">                 行容器
       <div class="line">                       一行歌词（可含多种语言）
-        <p class="english">english lyric</p>    语言 class 来自插件 JSON 的键名
-        <p class="chinese">中文歌词</p>
+        <p class="lyric-1">english lyric</p>    同一时间的第 1 行
+        <p class="lyric-2">中文歌词</p>          同一时间的第 2 行
       </div>
       <div class="line playing">               正在播放的歌词行
-        <p class="russian">ruskiy tekst 2</p>
-        <p class="english">english lyric 2</p>
+        <p class="lyric-1">ruskiy tekst 2</p>
+        <p class="lyric-2">english lyric 2</p>
       </div>
     </div>
   </div>
@@ -67,6 +67,10 @@ export const DEFAULT_DESKTOP_LYRICS_CSS = `/* 歌词区域 DOM 结构
   transition: 0.2s;
 }
 
+/* 同一时间的多行：lyric-1、lyric-2、lyric-3… 按出现顺序 */
+.line .lyric-1 { color: rgba(255, 255, 255, 0.8); }
+.line .lyric-2 { color: rgba(255, 220, 180, 0.75); }
+
 .playing p {
   font-size: 16px;
   color: green;
@@ -81,8 +85,8 @@ export const DEFAULT_DETAIL_LYRICS_CSS = `/* 歌词区域 DOM 结构（与悬浮
 <div class="lyrics-root" data-position="center">
   <div class="lyrics-viewport">
     <div class="lyrics-lines">
-      <div class="line"><p class="english">english lyric</p></div>
-      <div class="line playing"><p class="english">english lyric 2</p></div>
+      <div class="line"><p class="lyric-1">english lyric</p></div>
+      <div class="line playing"><p class="lyric-1">english lyric 2</p></div>
     </div>
   </div>
 </div>
@@ -121,6 +125,10 @@ export const DEFAULT_DETAIL_LYRICS_CSS = `/* 歌词区域 DOM 结构（与悬浮
   transition: 0.2s;
 }
 
+/* 同一时间的多行：lyric-1、lyric-2、lyric-3… 按出现顺序 */
+.line .lyric-1 { color: var(--color-base-content) / 0.85; }
+.line .lyric-2 { color: var(--color-base-content) / 0.6; }
+
 .playing p {
   font-size: 16px;
   color: var(--color-base-content);
@@ -130,31 +138,37 @@ export const DEFAULT_DETAIL_LYRICS_CSS = `/* 歌词区域 DOM 结构（与悬浮
 
 const LRC_LINE = /\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/;
 
-/** Keep a plugin-provided language key usable as a CSS class name. */
-function sanitizeClass(key: string): string {
-  return key.replace(/[^A-Za-z0-9_-]/g, "") || "lyric";
+/** Assign stable, order-based CSS classes; language is never inferred. */
+function orderedParts(texts: string[]): LyricPart[] {
+  return texts
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text, index) => ({ lang: "lyric-" + (index + 1), text }));
 }
 
-/** Parse an LRC string into timed, single-language lines. */
+/** Parse LRC lines, grouping equal timestamps into one ordered line. */
 export function parseLrc(raw: string): LyricLine[] {
-  const out: LyricLine[] = [];
+  const groups = new Map<number, string[]>();
   for (const line of raw.split("\n")) {
     const m = line.match(LRC_LINE);
-    if (m) {
-      out.push({
-        t: parseInt(m[1], 10) * 60 + parseFloat(m[2]),
-        parts: [{ lang: "lyric", text: m[3] || "" }],
-      });
-    }
+    if (!m) continue;
+    const time = parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+    const text = (m[3] || "").trim();
+    if (!text) continue;
+    const parts = groups.get(time) ?? [];
+    // Within one timestamp the source order is the display order. Keep every
+    // line: some providers append more than the usual original + translation.
+    parts.push(text);
+    groups.set(time, parts);
   }
-  out.sort((a, b) => a.t - b.t);
-  return out;
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([t, texts]) => ({ t, parts: orderedParts(texts) }));
 }
 
 /**
- * Parse the plugin multi-language payload:
- * `[{ time: 10.3, english: "…", chinese: "…" }, …]`.
- * Every key except the timestamp becomes one `<p class="<key>">`.
+ * Parse the plugin multi-language payload in object key order. Keys are not
+ * used as CSS classes; values receive lyric-1, lyric-2, ... in source order.
  */
 function parseMultilang(data: unknown[]): LyricLine[] {
   const out: LyricLine[] = [];
@@ -163,13 +177,12 @@ function parseMultilang(data: unknown[]): LyricLine[] {
     const record = entry as Record<string, unknown>;
     const rawTime = record.time ?? record.t ?? 0;
     const time = typeof rawTime === "number" ? rawTime : Number(rawTime);
-    const parts: LyricPart[] = [];
+    const texts: string[] = [];
     for (const [key, value] of Object.entries(record)) {
       if (key === "time" || key === "t") continue;
-      if (typeof value !== "string") continue;
-      const text = value.trim();
-      if (text) parts.push({ lang: sanitizeClass(key), text });
+      if (typeof value === "string") texts.push(value);
     }
+    const parts = orderedParts(texts);
     if (parts.length) out.push({ t: Number.isFinite(time) ? time : 0, parts });
   }
   out.sort((a, b) => a.t - b.t);
@@ -197,7 +210,8 @@ export function parseLyrics(raw: string): LyricLine[] {
   // Untimed lyrics: still show them, just without a highlighted line.
   return trimmed
     .split("\n")
-    .map((text) => ({ t: 0, parts: [{ lang: "lyric", text }] }));
+    .filter((text) => text.trim())
+    .map((text) => ({ t: 0, parts: orderedParts([text]) }));
 }
 
 /** Index of the line that should be highlighted at `elapsed` seconds. */

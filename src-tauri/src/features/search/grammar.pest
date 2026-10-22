@@ -3,10 +3,14 @@
 // Supported query syntax:
 //   country:russia                  // tag filter
 //   title CONTAINS "hello"          // text filter
+//   song_metadata CONTAINS "a b"    // title/artist/album, all words (AND)
 //   genre:pop AND mood:dark         // boolean AND
 //   country:russia OR genre:pop     // boolean OR
 //   NOT genre:pop                   // negation
 //   (a OR b) AND c                  // grouping
+//
+// CONTAINS is loose by design: words are matched case- and
+// diacritic-insensitively, and every word must match (AND).
 
 query = { SOI ~ expr ~ EOI }
 expr = { or_expr }
@@ -14,25 +18,30 @@ expr = { or_expr }
 or_expr  = { and_expr ~ (or_op ~ and_expr)* }
 and_expr = { atom ~ (and_op ~ atom)* }
 
-or_op  = { "OR" }
-and_op = { "AND" }
+or_op  = { ^"OR" }
+and_op = { ^"AND" }
 
 atom = { paren_expr | not_expr | filter }
 
 paren_expr = { "(" ~ expr ~ ")" }
 not_expr   = { not_op ~ atom }
-not_op     = { "NOT" | "!" }
+not_op     = { ^"NOT" | "!" }
 
-filter = { tag_filter | text_filter }
+filter = { tag_filter | text_filter | cmp_filter }
 
 tag_filter = { ident ~ ":" ~ tag_value }
 tag_value  = { ident | quoted_string }
 
-text_filter = { field ~ "CONTAINS" ~ quoted_string }
+text_filter = { field ~ ^"CONTAINS" ~ quoted_string }
+
+cmp_filter = { field ~ cmp_op ~ (quoted_string | ident) }
+cmp_op = { ">=" | "<=" | "!=" | "=" | ">" | "<" }
 
 field = {
-    "title" | "artist" | "album" | "source" | "path"
-    | "added_time" | "duration" | "import_order" | "import_source"
+    "song_metadata" | "tags"
+    | "id" | "title" | "artist" | "album" | "source" | "source_id" | "path"
+    | "file_name" | "notes" | "lyrics"
+    | "added_time" | "duration"
 }
 
 ident = @{ (ASCII_ALPHA | ASCII_DIGIT | "_" | "-" | ".")+ }

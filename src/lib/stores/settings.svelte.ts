@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/transport";
 import { emit } from "@tauri-apps/api/event";
 import type { AppSettings, LyricsPosition } from "$lib/types";
 import { defaultShortcuts } from "$lib/shortcuts";
@@ -22,8 +22,11 @@ class SettingsStore {
     shortcuts: defaultShortcuts(),
     seek_step_secs: 5,
     volume_step: 5,
+    scan_extensions: ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "ape", "aiff", "wv"],
   });
   loaded = $state(false);
+  /** Accelerators the OS refused to register (usually already taken). */
+  globalShortcutFailures = $state<string[]>([]);
 
   /** Load settings from the backend. */
   async load() {

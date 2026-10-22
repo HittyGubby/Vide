@@ -1,6 +1,7 @@
 [package]
 name = "vide"
 version = "0.1.0"
+default-run = "vide"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -28,7 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 walkdir = "2"
 axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
 lofty = "0.21"
 pest = "2"
 pest_derive = "2"
@@ -40,4 +41,10 @@ futures = "0.3"
 mime_guess = "2"
 tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+base64 = "0.22"
+argon2 = "0.5"
+rand = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tauri-plugin-global-shortcut = "2"
+unicode-normalization = "0.1"

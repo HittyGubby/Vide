@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/transport";
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { player } from "$lib/stores/player.svelte";
@@ -26,15 +26,13 @@
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import type { Song } from "$lib/types";
+  import { loadCoverWithFallback } from "$lib/cover";
+  import { isTauri } from "$lib/isTauri";
 
-  const appWindow = getCurrentWindow();
-
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  const appWindow = (isTauri ? getCurrentWindow() : null) as ReturnType<typeof getCurrentWindow>;
 
   onMount(() => {
-    player.poll();
-    pollTimer = setInterval(() => player.poll(), 1000);
-    return () => clearInterval(pollTimer);
+    player.startStatusUpdates();
   });
 
   function formatTime(secs: number): string {
@@ -61,13 +59,7 @@
   }
 
   async function seekTrack(targetSecs: number) {
-    if (player.duration <= 0) return;
-    try {
-      await invoke("seek", { positionSecs: targetSecs });
-      player.elapsed = targetSecs;
-    } catch {
-      /* seek not supported in this mode */
-    }
+    await player.seekTo(targetSecs);
   }
 
   function close() {
@@ -87,27 +79,40 @@
     }
   }
 
-  // Lyrics
+  // Lyrics are loaded per song, independent of playing/paused state.
   let lyricsText = $state<string | null>(null);
   let lyricsLoading = $state(false);
+  const lyricsCache = new Map<string, string | null>();
+  let loadedLyricsId: string | null = null;
 
   $effect(() => {
     const id = player.mediaId;
-    if (id && player.isPlaying) {
-      lyricsLoading = true;
-      invoke("get_lyrics", { songId: id })
-        .then((lyrics) => {
-          lyricsText = (lyrics as string | null) ?? null;
-        })
-        .catch(() => {
-          lyricsText = null;
-        })
-        .finally(() => {
-          lyricsLoading = false;
-        });
-    } else {
+    if (!id) {
+      loadedLyricsId = null;
       lyricsText = null;
+      lyricsLoading = false;
+      return;
     }
+    if (loadedLyricsId === id) return;
+    loadedLyricsId = id;
+    if (lyricsCache.has(id)) {
+      lyricsText = lyricsCache.get(id) ?? null;
+      lyricsLoading = false;
+      return;
+    }
+    lyricsLoading = true;
+    invoke<string | null>("get_lyrics", { songId: id })
+      .then((lyrics) => {
+        lyricsCache.set(id, lyrics ?? null);
+        if (player.mediaId === id) lyricsText = lyrics ?? null;
+      })
+      .catch(() => {
+        lyricsCache.set(id, null);
+        if (player.mediaId === id) lyricsText = null;
+      })
+      .finally(() => {
+        if (player.mediaId === id) lyricsLoading = false;
+      });
   });
 
   // Status text shown next to the time (like LX's "Failed to get lyrics").
@@ -123,32 +128,6 @@
   // Timed lyrics: parse [mm:ss] markers, highlight the active line. The same
   // component (and the same user stylesheet) powers the desktop lyrics window.
   let lrcLines = $derived.by(() => (lyricsText ? parseLyrics(lyricsText) : []));
-
-  // ── Drag on lyrics to seek ──
-  let dragging = $state(false);
-  function onLyrPointerDown(e: PointerEvent) {
-    if (player.duration <= 0) return;
-    dragging = true;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    seekFromLyr(e);
-  }
-  function seekFromLyr(e: PointerEvent) {
-    if (!dragging || player.duration <= 0) return;
-    const target = e.currentTarget as HTMLElement;
-    const rect = target.getBoundingClientRect();
-    const pct = (e.clientY - rect.top) / rect.height;
-    const secs = Math.max(0, Math.min(1, pct)) * player.duration;
-    void invoke("seek", { positionSecs: secs });
-    player.elapsed = secs;
-  }
-  function onLyrPointerMove(e: PointerEvent) {
-    if (dragging) seekFromLyr(e);
-  }
-  function onLyrPointerUp(e: PointerEvent) {
-    dragging = false;
-    const el = e.currentTarget as HTMLElement;
-    if (el?.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
-  }
 
   // ── Playback rate popup ──────────────────────────
   let rateOpen = $state(false);
@@ -199,16 +178,18 @@
   <div class="detail-header">
     <div class="hd-spacer"></div>
     <button class="hd-btn" onclick={close} title="收起"><ChevronDown size={18} /></button>
-    <button class="hd-btn" onclick={minimize} title="最小化"><Minus size={16} /></button>
-    <button class="hd-btn" onclick={toggleMaximize} title="最大化"><Maximize size={15} /></button>
-    <button class="hd-btn hd-close" onclick={closeWindow} title="关闭"><X size={16} /></button>
+    {#if isTauri}
+      <button class="hd-btn" onclick={minimize} title="最小化"><Minus size={16} /></button>
+      <button class="hd-btn" onclick={toggleMaximize} title="最大化"><Maximize size={15} /></button>
+      <button class="hd-btn hd-close" onclick={closeWindow} title="关闭"><X size={16} /></button>
+    {/if}
   </div>
 
   <div class="detail-main">
     <div class="detail-left">
       <div class="cover-large">
         {#if player.cover}
-          <img src={player.cover} alt="" class="cover-img" />
+          <img src={player.cover} alt="" class="cover-img" onerror={(e) => loadCoverWithFallback(e.currentTarget as HTMLImageElement)} />
         {:else}
           <span class="monogram-large">V</span>
         {/if}
@@ -226,17 +207,13 @@
       {:else if lyricsText}
         <!-- Same component and stylesheet as the desktop lyrics window, so the
              CSS edited in the settings applies here too. -->
-        <div
-          class="lyrics-content"
-          onpointerdown={onLyrPointerDown}
-          onpointermove={onLyrPointerMove}
-          onpointerup={onLyrPointerUp}
-          onpointercancel={onLyrPointerUp}
-        >
+        <div class="lyrics-content">
           <LyricsView
             lines={lrcLines}
             elapsed={player.elapsed}
             css={settingsStore.settings.detail_lyrics_css}
+            manualScroll={true}
+            selectable={true}
           />
         </div>
       {:else}
@@ -297,15 +274,17 @@
         </div>
         <VolumeControl />
 
-        <button
-          class="d-btn"
-          class:active={settingsStore.settings.desktop_lyrics_enabled}
-          title="桌面歌词"
-          aria-label="桌面歌词"
-          onclick={toggleDesktopLyrics}
-        >
-          <MessageSquareQuote size={16} />
-        </button>
+        {#if isTauri}
+          <button
+            class="d-btn"
+            class:active={settingsStore.settings.desktop_lyrics_enabled}
+            title="桌面歌词"
+            aria-label="桌面歌词"
+            onclick={toggleDesktopLyrics}
+          >
+            <MessageSquareQuote size={16} />
+          </button>
+        {/if}
 
         <PlayModeControl />
         <button class="d-btn" title="编辑标签" aria-label="编辑标签" onclick={openTagEditor}>
@@ -386,12 +365,12 @@
   .detail-main {
     flex: 1;
     display: flex;
-    align-items: flex-start;
+    align-items: stretch;
     justify-content: flex-start;
     gap: 80px;
     padding: 20px 60px 0 130px;
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
   /* The lyrics block sits on the far right. */
@@ -432,11 +411,20 @@
   .meta-label { color: var(--color-base-content) / 0.55; margin-right: 4px; }
 
   .detail-lyrics {
-    flex: 1; max-width: 420px; height: 100%; max-height: 72%;
-    overflow-y: auto; display: flex; flex-direction: column; justify-content: center;
+    flex: 1;
+    max-width: 420px;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
   /* The lyrics markup and its look now come from LyricsView + the user CSS. */
-  .lyrics-content { height: 100%; min-height: 0; }
+  .lyrics-content {
+    flex: 1;
+    height: 100%;
+    min-height: 0;
+  }
   .lyrics-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
     color: var(--color-base-content) / 0.55; text-align: center;

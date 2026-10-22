@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { onMount, tick } from "svelte";
+  import { invoke } from "$lib/transport";
+  import { onDestroy, onMount, tick } from "svelte";
   import {
     createTable,
     tableFeatures,
@@ -14,14 +14,20 @@
     type Updater,
   } from "@tanstack/svelte-table";
   import { page } from "$app/stores";
+  import { listen } from "@tauri-apps/api/event";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { Search, Play, Download, ListPlus, ExternalLink, Trash2, Tag as TagIcon } from "lucide-svelte";
+  import { Search, Play, Download, ListPlus, Info, Pencil, Trash2 } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
-  import { searchPresets } from "$lib/stores/searchPresets.svelte";
-  import PresetPanel from "$lib/components/library/PresetPanel.svelte";
+  import { downloadTarget as remoteDownloadTarget, isRemoteMode } from "$lib/transport";
+  import { isTauri } from "$lib/isTauri";
+  import { canManage } from "$lib/stores/auth.svelte";
+  import { libraryQuery } from "$lib/stores/libraryQuery.svelte";
+  import { loadClientState, saveClientState } from "$lib/clientState";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import ContextMenu from "$lib/components/song/ContextMenu.svelte";
-  import type { Song } from "$lib/types";
+  import SongHoverCard from "$lib/components/song/SongHoverCard.svelte";
+  import MetadataEditor from "$lib/components/song/MetadataEditor.svelte";
+  import type { Song, SongDetails, Tag } from "$lib/types";
   import type { MenuItem } from "$lib/components/song/ContextMenu.svelte";
 
   type ColumnId = "num" | "name" | "tag" | "artist" | "album" | "time";
@@ -69,51 +75,84 @@
     };
   }
 
-  function loadPrefs(): ColumnPrefs {
+  /** Validate stored column prefs and fill in any missing columns. */
+  function normalizePrefs(data: unknown): ColumnPrefs {
     const dflt = defaultPrefs();
-    try {
-      const saved = localStorage.getItem(COL_KEY);
-      if (!saved) return dflt;
-      const data: unknown = JSON.parse(saved);
-      // v1 stored an array of {id, shown, width}; drop it and start fresh.
-      if (!data || typeof data !== "object" || Array.isArray(data)) return dflt;
-      const raw = data as Record<string, unknown>;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return dflt;
+    const raw = data as Record<string, unknown>;
 
-      const sizing: ColumnSizingState = { ...dflt.sizing };
-      const rawSizing = (raw.sizing ?? {}) as Record<string, unknown>;
-      for (const d of COLUMN_DEFS) {
-        const w = Number(rawSizing[d.id]);
-        if (Number.isFinite(w) && w > 0) sizing[d.id] = Math.max(w, d.min);
-      }
-
-      const order: ColumnOrderState = Array.isArray(raw.order)
-        ? raw.order.filter((id): id is string => COLUMN_DEFS.some((d) => d.id === id))
-        : [];
-      for (const d of COLUMN_DEFS) if (!order.includes(d.id)) order.push(d.id);
-
-      const visibility: ColumnVisibilityState = { ...dflt.visibility };
-      const rawVis = (raw.visibility ?? {}) as Record<string, unknown>;
-      for (const d of COLUMN_DEFS) {
-        if (typeof rawVis[d.id] === "boolean") visibility[d.id] = rawVis[d.id] as boolean;
-      }
-      // Keep at least one column on screen.
-      if (!COLUMN_DEFS.some((d) => visibility[d.id] !== false)) visibility.name = true;
-
-      return { sizing, order, visibility };
-    } catch {
-      return dflt;
+    const sizing: ColumnSizingState = { ...dflt.sizing };
+    const rawSizing = (raw.sizing ?? {}) as Record<string, unknown>;
+    for (const d of COLUMN_DEFS) {
+      const w = Number(rawSizing[d.id]);
+      if (Number.isFinite(w) && w > 0) sizing[d.id] = Math.max(w, d.min);
     }
+
+    const order: ColumnOrderState = Array.isArray(raw.order)
+      ? raw.order.filter((id): id is string => COLUMN_DEFS.some((d) => d.id === id))
+      : [];
+    for (const d of COLUMN_DEFS) if (!order.includes(d.id)) order.push(d.id);
+
+    const visibility: ColumnVisibilityState = { ...dflt.visibility };
+    const rawVis = (raw.visibility ?? {}) as Record<string, unknown>;
+    for (const d of COLUMN_DEFS) {
+      if (typeof rawVis[d.id] === "boolean") visibility[d.id] = rawVis[d.id] as boolean;
+    }
+    // Keep at least one column on screen.
+    if (!COLUMN_DEFS.some((d) => visibility[d.id] !== false)) visibility.name = true;
+
+    return { sizing, order, visibility };
   }
 
-  let prefs = $state<ColumnPrefs>(loadPrefs());
+  let prefs = $state<ColumnPrefs>(defaultPrefs());
+  let prefsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // Column layout is UI state, stored in SQLite (client:list.columns).
   function savePrefs() {
-    try {
-      localStorage.setItem(COL_KEY, JSON.stringify(prefs));
-    } catch {
-      /* ignore */
-    }
+    if (prefsSaveTimer) clearTimeout(prefsSaveTimer);
+    prefsSaveTimer = setTimeout(() => {
+      prefsSaveTimer = undefined;
+      void saveClientState("list.columns", $state.snapshot(prefs));
+    }, 250);
   }
+
+  async function loadColumnPrefs() {
+    const stored = await loadClientState<unknown>("list.columns");
+    if (stored) {
+      prefs = normalizePrefs(stored);
+      localStorage.removeItem(COL_KEY);
+    } else {
+      // One-time migration from the old localStorage layout.
+      try {
+        const legacy = localStorage.getItem(COL_KEY);
+        if (legacy) {
+          prefs = normalizePrefs(JSON.parse(legacy));
+          await saveClientState("list.columns", $state.snapshot(prefs));
+          localStorage.removeItem(COL_KEY);
+        }
+      } catch {
+        /* ignore corrupt legacy data */
+      }
+    }
+    // The table is created before the async load; fit the restored widths to
+    // the current container once the header has rendered.
+    await tick();
+    if (headerEl) fitToWidth(headerEl.clientWidth - scrollbarWidth);
+  }
+
+  onDestroy(() => {
+    if (prefsSaveTimer) {
+      clearTimeout(prefsSaveTimer);
+      prefsSaveTimer = undefined;
+      void saveClientState("list.columns", $state.snapshot(prefs));
+    }
+    if (scrollSaveTimer) {
+      clearTimeout(scrollSaveTimer);
+      scrollSaveTimer = undefined;
+    }
+    if (listEl) void saveClientState("list.scroll", { top: listEl.scrollTop });
+  });
 
   /** Resolve a TanStack updater (a value or an updater function). */
   function resolveUpdater<T>(updater: Updater<T>, prev: T): T {
@@ -282,7 +321,11 @@
   let sortField = $state<ColumnId>("name");
   let sortAsc = $state(true);
   let editingSong = $state<Song | null>(null);
-  let activePresetId = $state<string | null>(null);
+  let editingMetaSong = $state<Song | null>(null);
+  // The last query actually reflected in `songs`; the effect below only
+  // reloads when the store's applied query differs.
+  let lastLoadedQuery = $state<string | null>(null);
+  let initialLoadDone = $state(false);
   let listEl = $state<HTMLDivElement | null>(null);
   // Header element: always rendered, so it can measure the available width
   // even while the list is empty or still loading.
@@ -306,6 +349,7 @@
       viewHeight = listEl.clientHeight || 0;
       measureScrollbar();
     }
+    clearHover();
     saveScroll();
   }
 
@@ -321,20 +365,44 @@
     }
   });
 
-  // Remember the scroll position between visits (localStorage, UI-only).
+  // Scroll position is UI state, stored in SQLite (client:list.scroll).
+  // The localStorage key is only read once to migrate old data.
   const SCROLL_KEY = "vide_list_scroll";
   function saveScroll() {
     if (!listEl) return;
-    try {
-      localStorage.setItem(SCROLL_KEY, String(listEl.scrollTop));
-    } catch { /* ignore */ }
+    const top = listEl.scrollTop;
+    if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = setTimeout(() => {
+      scrollSaveTimer = undefined;
+      void saveClientState("list.scroll", { top });
+    }, 300);
   }
-  function restoreScroll() {
-    if (!listEl) return;
-    try {
-      const s = localStorage.getItem(SCROLL_KEY);
-      if (s != null) listEl.scrollTop = parseInt(s, 10) || 0;
-    } catch { /* ignore */ }
+
+  async function restoreScroll() {
+    let saved = await loadClientState<{ top?: number } | number>("list.scroll");
+    if (saved == null) {
+      try {
+        const legacy = localStorage.getItem(SCROLL_KEY);
+        if (legacy != null) {
+          const top = parseInt(legacy, 10) || 0;
+          saved = { top };
+          await saveClientState("list.scroll", saved);
+          localStorage.removeItem(SCROLL_KEY);
+        }
+      } catch {
+        /* ignore corrupt legacy data */
+      }
+    }
+    const top = typeof saved === "number" ? saved : saved?.top;
+    if (saved != null) localStorage.removeItem(SCROLL_KEY);
+    if (typeof top === "number" && listEl) {
+      const max = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
+      listEl.scrollTop = Math.min(Math.max(0, top), max);
+      // Use the browser-clamped value: setting a stale saved offset can make
+      // the virtual window render rows at the wrong place.
+      viewTop = listEl.scrollTop;
+      viewHeight = listEl.clientHeight || 0;
+    }
   }
 
   // Locate the given song id in the list: highlight + scroll it into view.
@@ -361,24 +429,47 @@
     setTimeout(() => (locatorTarget = null), 2500);
   }
 
+  // The background startup scan (and the settings-page "scan now" action)
+  // announce changes; refresh the current view without disturbing the query.
+  onMount(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    void listen("vide:library-changed", () => {
+      void loadSongs();
+    }).then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  });
+
   onMount(async () => {
-    await searchPresets.load();
-    // Handle an initial locate request (navigating here with ?locate=).
+    await loadColumnPrefs();
+    await loadSortPrefs();
+    await libraryQuery.load();
+    lastLoadedQuery = libraryQuery.query;
+    initialLoadDone = true;
+
+    // A locate request must be able to see the whole library: clear the
+    // restored query first, otherwise the song may be filtered out.
     const locateId = $page.url.searchParams.get("locate");
-    const presetParam = $page.url.searchParams.get("preset");
-    if (presetParam === "all") {
-      activePresetId = null;
-      await searchPresets.select(null);
-    } else {
-      activePresetId = searchPresets.activeId;
-    }
-    await loadSongs();
     if (locateId) {
+      lastLoadedQuery = "";
+      await libraryQuery.execute("");
+      await loadSongs();
       await scrollToSong(locateId);
     } else {
+      await loadSongs();
       await tick();
-      restoreScroll();
+      await restoreScroll();
     }
+  });
+
+  // The titlebar query bar writes libraryQuery.query; reload the list whenever
+  // the applied query changes (Enter, a saved query, a history item, clear).
+  $effect(() => {
+    if (!initialLoadDone || !libraryQuery.loaded) return;
+    const query = libraryQuery.query;
+    if (lastLoadedQuery === query) return;
+    lastLoadedQuery = query;
+    void loadSongs();
   });
 
   // Reactive locate: the player bar signals a monotonic request id so
@@ -391,10 +482,13 @@
       _lastLocateReq = req;
       const locateId = player.locateSongId;
       if (locateId) {
-        // Force "全部歌曲" so the song is present in this view.
-        activePresetId = null;
-        void searchPresets.select(null);
-        void loadSongs().then(() => scrollToSong(locateId));
+        // Force "全部歌曲" so the song is present in this view. Set the
+        // bookkeeping first so the query effect does not also reload.
+        lastLoadedQuery = "";
+        void libraryQuery.execute("").then(async () => {
+          await loadSongs();
+          await scrollToSong(locateId);
+        });
       }
     } else if (req === 0) {
       _lastLocateReq = -1;
@@ -409,37 +503,56 @@
     loading = true;
     error = null;
     try {
-      const preset = searchPresets.active;
-      if (preset) {
-        songs = await invoke<Song[]>("search_songs", { query: preset.query });
-      } else {
-        songs = await invoke<Song[]>("list_library_songs");
-      }
+      const query = libraryQuery.filter.trim();
+      songs = query
+        ? await invoke<Song[]>("search_songs", { query })
+        : await invoke<Song[]>("list_library_songs");
     } catch (e) {
       error = String(e);
       songs = [];
     } finally {
       loading = false;
     }
-  }
-
-  async function selectPreset(id: string | null) {
-    activePresetId = id;
-    await searchPresets.select(id);
-    await loadSongs();
-  }
-
-  function toggleSort(field: ColumnId) {
-    if (sortField === field) sortAsc = !sortAsc;
-    else {
-      sortField = field;
-      sortAsc = true;
+    // The new result set may be shorter than the old scroll offset. Clamp it
+    // before the virtual window computes its padding, otherwise the list can
+    // stay scrolled into empty space (and fight scroll anchoring).
+    await tick();
+    if (listEl) {
+      const max = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
+      if (listEl.scrollTop > max) listEl.scrollTop = max;
+      viewTop = listEl.scrollTop;
+      viewHeight = listEl.clientHeight || 0;
     }
   }
 
+  function toggleSort(field: ColumnId) {
+    if (field === "num") return;
+    const current = headerSort;
+    const asc = current && current.field === field ? !current.asc : true;
+    sortField = field;
+    sortAsc = asc;
+    void saveClientState("list.sort", { field: sortField, asc: sortAsc });
+
+    // Make the query string the source of truth: append or replace its
+    // trailing SORT BY clause and execute it.
+    const mapped = SORT_FIELD_BY_COLUMN[field];
+    if (mapped) void libraryQuery.setSort(mapped, asc);
+  }
+
+  async function loadSortPrefs() {
+    const saved = await loadClientState<{ field?: string; asc?: boolean }>("list.sort");
+    if (!saved) return;
+    const fields: ColumnId[] = ["num", "name", "tag", "artist", "album", "time"];
+    if (fields.includes(saved.field as ColumnId)) {
+      sortField = saved.field as ColumnId;
+    }
+    if (typeof saved.asc === "boolean") sortAsc = saved.asc;
+  }
+
   function sortIndicator(field: ColumnId): string {
-    if (sortField !== field) return "";
-    return sortAsc ? " ▲" : " ▼";
+    const current = headerSort;
+    if (!current || current.field !== field) return "";
+    return current.asc ? " ▲" : " ▼";
   }
 
   function formatDuration(seconds?: number): string {
@@ -449,9 +562,19 @@
     return m + ":" + s.toString().padStart(2, "0");
   }
 
-  // Unknown artist / album display as empty (per requirement).
+  // Display overrides win over the raw file tags; Unknown displays as empty.
+  function displayTitle(song: Song): string {
+    return song.metadata.display_title ?? song.title;
+  }
+  function displayArtist(song: Song): string {
+    return song.metadata.artist_override ?? song.artist;
+  }
+  function displayAlbum(song: Song): string {
+    return song.metadata.album_override ?? song.album;
+  }
+
   function displayText(song: Song, field: ColumnId): string {
-    const v = field === "artist" ? song.artist : song.album;
+    const v = field === "artist" ? displayArtist(song) : displayAlbum(song);
     return v && v !== "Unknown" ? v : "";
   }
 
@@ -466,28 +589,109 @@
     return song.tags.map((t) => t.namespace + ":" + t.value).join(", ");
   }
 
+  function tagHue(tag: Tag): number {
+    let hash = 0;
+    const text = tag.namespace + ":" + tag.value;
+    for (let i = 0; i < text.length; i++) {
+      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    }
+    return hash % 360;
+  }
+
+  // Column headers can express any sort field in the query language, not just
+  // the five visible columns.
+  const SORT_FIELD_BY_COLUMN: Record<ColumnId, string | null> = {
+    num: null,
+    name: "title",
+    tag: "tags",
+    artist: "artist",
+    album: "album",
+    time: "duration",
+  };
+  const COLUMN_BY_SORT_FIELD: Record<string, ColumnId> = {
+    title: "name",
+    song_metadata: "name",
+    tags: "tag",
+    artist: "artist",
+    album: "album",
+    duration: "time",
+  };
+
+  /** The active sort: a query SORT BY wins over the column-header fallback. */
+  let headerSort = $derived.by((): { field: ColumnId; asc: boolean } | null => {
+    const directive = libraryQuery.sort;
+    if (directive) {
+      const column = COLUMN_BY_SORT_FIELD[directive.field];
+      return column ? { field: column, asc: directive.asc } : null;
+    }
+    return { field: sortField, asc: sortAsc };
+  });
+
+  function sortValue(song: Song, field: string): string | number {
+    switch (field) {
+      case "title":
+      case "song_metadata":
+        return displayTitle(song);
+      case "artist":
+        return displayArtist(song);
+      case "album":
+        return displayAlbum(song);
+      case "tags":
+        return tagText(song);
+      case "duration":
+        return song.metadata.duration ?? 0;
+      case "added_time":
+        return song.metadata.added_time ?? "";
+      case "file_name":
+        return song.metadata.file_name ?? "";
+      case "notes":
+        return song.metadata.notes ?? "";
+      case "lyrics":
+        return song.metadata.lyrics ?? "";
+      case "source":
+        return song.sources.map((source) => source.platform).join(" ");
+      case "path":
+        return song.paths.map((path) => path.toString()).join(" ");
+      default:
+        return "";
+    }
+  }
+
+  function compareByField(a: Song, b: Song, field: string): number {
+    const left = sortValue(a, field);
+    const right = sortValue(b, field);
+    if (typeof left === "number" && typeof right === "number") {
+      return left - right;
+    }
+    return String(left).localeCompare(String(right));
+  }
+
+  function compareByColumn(a: Song, b: Song, field: ColumnId): number {
+    switch (field) {
+      case "name":
+        return displayTitle(a).localeCompare(displayTitle(b));
+      case "artist":
+        return displayArtist(a).localeCompare(displayArtist(b));
+      case "album":
+        return displayAlbum(a).localeCompare(displayAlbum(b));
+      case "tag":
+        return tagText(a).localeCompare(tagText(b));
+      case "time":
+        return (a.metadata.duration ?? 0) - (b.metadata.duration ?? 0);
+      default:
+        return 0;
+    }
+  }
+
   let sortedSongs = $derived.by(() => {
     const list = [...songs];
+    const directive = libraryQuery.sort;
     list.sort((a, b) => {
-      let cmp = 0;
-      switch (sortField) {
-        case "name":
-          cmp = a.title.localeCompare(b.title);
-          break;
-        case "artist":
-          cmp = a.artist.localeCompare(b.artist);
-          break;
-        case "album":
-          cmp = a.album.localeCompare(b.album);
-          break;
-        case "tag":
-          cmp = tagText(a).localeCompare(tagText(b));
-          break;
-        case "time":
-          cmp = (a.metadata.duration ?? 0) - (b.metadata.duration ?? 0);
-          break;
-      }
-      return sortAsc ? cmp : -cmp;
+      const cmp = directive
+        ? compareByField(a, b, directive.field)
+        : compareByColumn(a, b, sortField);
+      const asc = directive ? directive.asc : sortAsc;
+      return asc ? cmp : -cmp;
     });
     return list;
   });
@@ -498,8 +702,12 @@
     const n = sortedSongs.length;
     if (n === 0) return { start: 0, end: 0, padTop: 0, padBottom: 0 };
     const h = viewHeight || 600;
-    const first = Math.max(0, Math.floor(viewTop / ROW_H) - OVERSCAN);
-    const last = Math.min(n, Math.ceil((viewTop + h) / ROW_H) + OVERSCAN);
+    // Clamp stale scroll offsets to the current content: a shorter filtered
+    // result must not keep rendering pads based on the old list height.
+    const maxTop = Math.max(0, n * ROW_H - h);
+    const top = Math.min(Math.max(0, viewTop), maxTop);
+    const first = Math.max(0, Math.floor(top / ROW_H) - OVERSCAN);
+    const last = Math.min(n, Math.ceil((top + h) / ROW_H) + OVERSCAN);
     return {
       start: first,
       end: last,
@@ -516,15 +724,16 @@
       await player.playFromList(
         sortedSongs.map((s) => ({
           id: s.id,
-          title: s.metadata?.display_title ?? s.title,
-          artist: s.metadata?.artist_override ?? s.artist,
-          album: s.metadata?.album ?? s.album ?? "",
+          title: displayTitle(s),
+          artist: displayArtist(s),
+          album: displayAlbum(s),
         })),
         song.id,
       );
-      player.title = song.metadata?.display_title ?? song.title;
-      player.artist = song.metadata?.artist_override ?? song.artist;
-      player.album = song.metadata?.album ?? song.album ?? "";
+      player.title = displayTitle(song);
+      player.artist = displayArtist(song);
+      player.album = displayAlbum(song);
+      player.cover = song.metadata?.cover_url ?? null;
     } catch (e) {
       console.error("play error:", e);
     }
@@ -541,9 +750,19 @@
 
   function closeTagEditor() {
     editingSong = null;
+    // Tags are written immediately; refresh the visible rows once the editor
+    // loses focus/closes so tag columns and filters reflect the change.
+    void loadSongs();
   }
 
-  // ── "Jump to detail" external URL ─────────────────
+  // ── Details (local file / online source) ──────────
+  /** Transient toast shared by the row actions (cache / details). */
+  let songNote = $state<string | null>(null);
+  function showSongNote(message: string) {
+    songNote = message;
+    setTimeout(() => (songNote = null), 3000);
+  }
+
   function buildDetailUrl(song: Song): string | null {
     const src = song.sources[0];
     if (!src) return null;
@@ -551,6 +770,8 @@
     switch (src.platform) {
       case "youtube":
         return "https://www.youtube.com/watch?v=" + id;
+      case "soundcloud":
+        return id;
       case "bilibili":
       case "bili":
         return "https://www.bilibili.com/video/" + id;
@@ -566,54 +787,91 @@
       case "tencent":
       case "qq":
       case "tx":
-        return "https://y.qq.com/n/yqq/song/" + id + ".html";
-      case "migu":
-      case "mg":
-        return "http://music.migu.cn/v3/music/song/" + id;
+        return "https://y.qq.com/n/ryqq/songDetail/" + id;
       default:
         return null;
     }
   }
 
-  async function jumpToDetail(song: Song) {
-    const url = buildDetailUrl(song);
-    if (url) {
-      try {
-        await openUrl(url);
-      } catch (e) {
-        console.error("open url error:", e);
+  /**
+   * "Details" for a list row:
+   * - local file  → open its folder in the file manager and select the file;
+   * - online song → open its page in the default browser.
+   */
+  async function showSongDetails(song: Song) {
+    if (song.paths.length > 0) {
+      let lastError = "";
+      for (const path of song.paths) {
+        try {
+          // The backend opens the file manager and selects the file, falling
+          // back to the containing folder on desktops without FileManager1.
+          await invoke("reveal_local_file", { path });
+          return;
+        } catch (e) {
+          // Try the next duplicate location; report only if none worked.
+          lastError = String(e);
+          console.error("reveal item error:", e);
+        }
       }
+      showSongNote("无法在文件管理器中定位该文件" + (lastError ? "：" + lastError : ""));
+      return;
+    }
+
+    const url = buildDetailUrl(song);
+    if (!url) {
+      showSongNote("该歌曲没有可打开的来源链接");
+      return;
+    }
+    try {
+      if (isTauri) await openUrl(url);
+      else window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      console.error("open url error:", e);
+      showSongNote("无法打开浏览器");
     }
   }
 
   // Clear (delete) the cached media for a song, forcing a fresh fetch.
-  let clearCacheNote = $state<string | null>(null);
   async function clearCache(song: Song) {
     try {
       const n = await invoke<number>("clear_song_cache", { id: song.id });
-      clearCacheNote = "已清空缓存" + (n > 0 ? "（" + n + " 条）" : "（无缓存）");
-      setTimeout(() => (clearCacheNote = null), 3000);
+      showSongNote("已清空缓存" + (n > 0 ? "（" + n + " 条）" : "（无缓存）"));
     } catch (e) {
       console.error("clear cache error:", e);
     }
   }
 
-  // Download an online song into the local cache/library.
-  let downloadNote = $state<string | null>(null);
   async function downloadSong(song: Song) {
     try {
-      const n = await invoke<number>("download_song", { id: song.id });
-      if (n > 0) {
-        downloadNote = "已下载（" + n + " 个路径）";
-        await loadSongs();
-      } else {
-        downloadNote = "已是本地文件";
+      if (!isTauri) {
+        const target = remoteDownloadTarget(song.id);
+        if (!target) throw new Error("download endpoint unavailable");
+        const link = document.createElement("a");
+        link.href = target.url;
+        link.download = "";
+        link.click();
+        showSongNote("已开始下载");
+        return;
       }
-      setTimeout(() => (downloadNote = null), 3000);
+      if (isRemoteMode()) {
+        const target = remoteDownloadTarget(song.id);
+        if (!target) throw new Error("download endpoint unavailable");
+        const path = await invoke<string>("download_remote_to", {
+          url: target.url,
+          headers: target.headers,
+          destDir: null,
+        });
+        showSongNote("已保存到 " + path);
+      } else {
+        const path = await invoke<string>("download_song_to", {
+          id: song.id,
+          destDir: null,
+        });
+        showSongNote("已保存到 " + path);
+      }
     } catch (e) {
       console.error("download error:", e);
-      downloadNote = "下载失败: " + String(e);
-      setTimeout(() => (downloadNote = null), 4000);
+      showSongNote("下载失败: " + String(e));
     }
   }
 
@@ -621,9 +879,81 @@
   let ctxSong = $state<Song | null>(null);
   let ctxPos = $state<{ x: number; y: number } | null>(null);
 
+  // ── Hover details ─────────────────────────────────
+  let hoverDetails = $state<SongDetails | null>(null);
+  let hoverPos = $state<{ x: number; y: number } | null>(null);
+  let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+  let hoverHideTimer: ReturnType<typeof setTimeout> | undefined;
+  const detailsCache = new Map<string, SongDetails>();
+
+  function clearHover() {
+    if (hoverTimer) {
+      clearTimeout(hoverTimer);
+      hoverTimer = undefined;
+    }
+    if (hoverHideTimer) {
+      clearTimeout(hoverHideTimer);
+      hoverHideTimer = undefined;
+    }
+    hoverDetails = null;
+    hoverPos = null;
+  }
+
+  /** Give the pointer time to move from the row into the card itself. */
+  function scheduleHideHover() {
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = setTimeout(() => {
+      hoverHideTimer = undefined;
+      clearHover();
+    }, 500);
+  }
+
+  function keepHover() {
+    if (hoverHideTimer) {
+      clearTimeout(hoverHideTimer);
+      hoverHideTimer = undefined;
+    }
+  }
+
+  function scheduleHover(song: Song, e: MouseEvent) {
+    clearHover();
+    const x = e.clientX;
+    const y = e.clientY;
+    hoverTimer = setTimeout(async () => {
+      hoverTimer = undefined;
+      const cached = detailsCache.get(song.id);
+      if (cached) {
+        hoverDetails = cached;
+        hoverPos = { x, y };
+        return;
+      }
+      try {
+        const details = await invoke<SongDetails>("get_song_details", { id: song.id });
+        detailsCache.set(song.id, details);
+        hoverDetails = details;
+        hoverPos = { x, y };
+      } catch (error) {
+        console.error("song details error:", error);
+      }
+    }, 600);
+  }
+
+  /** Apply a saved metadata override to the list, player and hover cache. */
+  function applySavedMetadata(updated: Song) {
+    songs = songs.map((song) => (song.id === updated.id ? updated : song));
+    detailsCache.delete(updated.id);
+    clearHover();
+    if (player.mediaId === updated.id) {
+      player.title = displayTitle(updated);
+      player.artist = displayArtist(updated);
+      player.album = displayAlbum(updated);
+    }
+  }
+
   function openContextMenu(song: Song, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    clearHover();
     ctxSong = song;
     ctxPos = { x: e.clientX, y: e.clientY };
   }
@@ -635,16 +965,35 @@
 
   let contextMenuItems = $derived.by(() => {
     if (!ctxSong) return [];
-    const detailUrl = buildDetailUrl(ctxSong);
+    const song = ctxSong;
+    const isLocal = song.paths.length > 0;
+    const remote = isRemoteMode() || !isTauri;
+    const canEdit = canManage();
     return [
-      { label: "播放", icon: Play, action: () => playSong(ctxSong!) },
-      { label: "编辑标签", icon: ListPlus, action: () => (editingSong = ctxSong) },
-      { label: "", action: () => {}, icon: undefined, divider: true },
-      ...(detailUrl
-        ? [{ label: "跳转详情", icon: ExternalLink, action: () => jumpToDetail(ctxSong!) } as MenuItem]
+      { label: "播放", icon: Play, action: () => playSong(song) },
+      ...(canEdit
+        ? [
+            { label: "编辑标签", icon: ListPlus, action: () => (editingSong = song) } as MenuItem,
+            { label: "编辑信息", icon: Pencil, action: () => (editingMetaSong = song) } as MenuItem,
+            { label: "", action: () => {}, icon: undefined, divider: true } as MenuItem,
+          ]
         : []),
-      { label: "清空该曲缓存", icon: Trash2, action: () => clearCache(ctxSong!) },
-      { label: "下载", icon: Download, action: () => downloadSong(ctxSong!) },
+      // One "details" entry for both kinds of song: reveal the file for a
+      // local track, open the source page for an online one.
+      { label: "详情", icon: Info, action: () => showSongDetails(song) },
+      // Download works for local and online songs; cache cleanup only for online.
+      ...(canManage()
+        ? [{ label: "下载", icon: Download, action: () => void downloadSong(song) } as MenuItem]
+        : []),
+      ...(remote || isLocal
+        ? []
+        : [
+            {
+              label: "清空该曲缓存",
+              icon: Trash2,
+              action: () => clearCache(song),
+            } as MenuItem,
+          ]),
     ] as MenuItem[];
   });
 
@@ -721,13 +1070,6 @@
 </script>
 
 <div class="library">
-  <PresetPanel
-    activeId={activePresetId}
-    onSelect={selectPreset}
-    onPlay={playSong}
-    songs={songs}
-  />
-
   <div class="library-main">
     <!-- Table header -->
     <div class="table-header" bind:this={headerEl} style="padding-right: {scrollbarWidth}px">
@@ -799,7 +1141,12 @@
             class:is-playing={isPlaying(song)}
             class:located={locatorTarget === song.id}
             data-song-id={song.id}
-            onclick={() => playSong(song)}
+            onclick={() => {
+              clearHover();
+              void playSong(song);
+            }}
+            onmouseenter={(e) => scheduleHover(song, e)}
+            onmouseleave={scheduleHideHover}
             oncontextmenu={(e) => openContextMenu(song, e)}
           >
             {#each headers as header (header.id)}
@@ -812,7 +1159,7 @@
                   {/if}
                 {:else if header.column.id === "name"}
                   <div class="name-cell">
-                    <span class="name-text">{song.title}</span>
+                    <span class="name-text">{displayTitle(song)}</span>
                     {#if platformTag(song)}
                       <span class="tag-badge" class:local={platformTag(song)!.kind == "local"}>
                         {platformTag(song)!.label}
@@ -821,9 +1168,13 @@
                   </div>
                 {:else if header.column.id === "tag"}
                   <div class="tag-cell">
-                    {#if song.tags.length > 0}
-                      <span class="tag-cell-text">{tagText(song)}</span>
-                    {/if}
+                    {#each song.tags as tag}
+                      <span
+                        class="tag-pill"
+                        style="--tag-hue: {tagHue(tag)}"
+                        title={tag.namespace + ":" + tag.value}
+                      >{tag.namespace}:{tag.value}</span>
+                    {/each}
                   </div>
                 {:else if header.column.id === "artist"}
                   <span class="cell-text">{displayText(song, "artist")}</span>
@@ -843,12 +1194,31 @@
   </div>
 </div>
 
-{#if clearCacheNote}
-  <div class="toast-note">{clearCacheNote}</div>
+{#if songNote}
+  <div class="toast-note">{songNote}</div>
 {/if}
+
 
 {#if editingSong}
   <TagEditor song={editingSong} onclose={closeTagEditor} />
+{/if}
+
+{#if editingMetaSong}
+  <MetadataEditor
+    song={editingMetaSong}
+    onclose={() => (editingMetaSong = null)}
+    onsaved={applySavedMetadata}
+  />
+{/if}
+
+{#if hoverDetails && hoverPos}
+  <SongHoverCard
+    details={hoverDetails}
+    x={hoverPos.x}
+    y={hoverPos.y}
+    onenter={keepHover}
+    onleave={scheduleHideHover}
+  />
 {/if}
 
 {#if ctxPos && contextMenuItems.length > 0}
@@ -946,7 +1316,16 @@
   .col-filler { flex: 1 1 0; min-width: 0; }
 
   /* Body */
-  .song-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-width: 0; }
+  .song-list {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-width: 0;
+    /* Scroll anchoring fights a virtual list when rows/padding change above
+       the viewport; it can cause a self-sustaining scroll loop. */
+    overflow-anchor: none;
+    overscroll-behavior: contain;
+  }
   .virtual-pad { flex-shrink: 0; }
   .song-row {
     display: flex;
@@ -983,8 +1362,28 @@
   }
   .tag-badge.local { background: var(--color-success) / 0.15; color: var(--color-success); }
 
-  .tag-cell { width: 100%; min-width: 0; }
-  .tag-cell-text { font-size: 11px; color: var(--color-base-content) / 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag-cell {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .tag-pill {
+    flex: none;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 10px;
+    line-height: 1.5;
+    padding: 1px 5px;
+    border-radius: 999px;
+    color: hsl(var(--tag-hue) 70% 78%);
+    background: hsl(var(--tag-hue) 55% 45% / 0.16);
+    border: 1px solid hsl(var(--tag-hue) 60% 55% / 0.28);
+  }
 
   .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cell-time { color: var(--color-base-content) / 0.6; font-size: 12px; }
@@ -996,6 +1395,46 @@
   .empty-icon { opacity: 0.4; }
   .empty-title { font-size: 15px; font-weight: 500; color: var(--color-base-content) / 0.7; }
   .empty-desc { font-size: 12px; text-align: center; max-width: 240px; line-height: 1.5; }
+
+  .download-backdrop {
+    position: fixed; inset: 0; z-index: 700;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .download-dialog {
+    width: min(520px, calc(100vw - 40px));
+    background: var(--color-base-200);
+    border: 1px solid var(--panel-border-strong);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    box-shadow: var(--shadow-lg);
+  }
+  .download-dialog h3 { margin: 0; font-size: 14px; }
+  .download-title { margin: 0; font-size: 12px; color: var(--color-base-content) / 0.7; }
+  .download-label { font-size: 11px; color: var(--color-base-content) / 0.6; }
+  .download-input {
+    width: 100%; box-sizing: border-box;
+    padding: 6px 9px;
+    border: 1px solid var(--color-base-300);
+    border-radius: 5px;
+    background: var(--color-base-100);
+    color: var(--color-base-content);
+    font: 11px var(--font-mono, monospace);
+  }
+  .download-input:focus { outline: none; border-color: var(--color-primary); }
+  .download-success {
+    margin: 2px 0; font-size: 11px; color: var(--color-success);
+    overflow-wrap: anywhere; user-select: text;
+  }
+  .download-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+  .download-actions button {
+    padding: 5px 10px; border-radius: 5px; border: 1px solid var(--panel-border);
+    background: var(--color-base-100); color: var(--color-base-content) / 0.8;
+    font-size: 12px;
+  }
+  .download-actions button:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
+  .download-actions button:disabled { opacity: 0.5; }
 
   .toast-note {
     position: fixed;

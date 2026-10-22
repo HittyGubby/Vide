@@ -1,7 +1,7 @@
 use crate::app::AppState;
 use crate::features::library::ScanResult;
 use crate::features::player::PlaybackStatus;
-use crate::features::plugin::types::SearchResultItem;
+use crate::features::plugin::types::{StreamDescriptor, Track};
 use crate::features::search::fuzzy::FuzzyMatch;
 use crate::infra::hash::song_id_from_source;
 use crate::models::song::{Song, SongId, SongMetadata, Source};
@@ -40,13 +40,27 @@ pub async fn import_songs(
     Ok(count)
 }
 
+fn visible_in_library(song: &Song, roots: &[std::path::PathBuf]) -> bool {
+    if !song.tags.is_empty() {
+        return true;
+    }
+    song.paths.iter().any(|path| {
+        roots
+            .iter()
+            .any(|root| path == root || path.starts_with(root))
+    })
+}
+
 #[tauri::command]
 pub async fn list_library_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, String> {
-    state
+    let roots = state.config.lock().await.library_roots.clone();
+    let mut songs = state
         .db
         .list_library_songs()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    songs.retain(|song| visible_in_library(song, &roots));
+    Ok(songs)
 }
 
 #[tauri::command]
@@ -139,6 +153,44 @@ pub async fn get_song(
         .map_err(|e| e.to_string())
 }
 
+fn clean_override(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// Set or clear the user's display title / artist / album overrides and notes.
+/// The raw scanned values stay intact; the list, player and search use the
+/// overrides where present.
+#[tauri::command]
+pub async fn update_song_metadata(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    notes: Option<String>,
+) -> Result<Song, String> {
+    let mut song = state
+        .db
+        .get_song(&SongId(id))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "song not found".to_string())?;
+
+    song.metadata.display_title = clean_override(title);
+    song.metadata.artist_override = clean_override(artist);
+    song.metadata.album_override = clean_override(album);
+    song.metadata.notes = clean_override(notes);
+
+    state
+        .db
+        .upsert_song(&song)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(song)
+}
+
 /// Clear (delete) the cached media for a song, forcing a fresh fetch on
 /// the next playback. Returns the number of cache entries removed.
 #[tauri::command]
@@ -172,6 +224,187 @@ pub async fn clear_song_cache(
 /// cached file as a local path for the song, so it becomes playable offline
 /// (i.e. it joins the local library). Returns the number of paths now on the
 /// song (0 for already-local songs, >=1 after a successful download).
+fn detect_audio_extension(path: &std::path::Path) -> &'static str {
+    use std::io::Read;
+    let mut head = [0u8; 16];
+    let read = std::fs::File::open(path)
+        .and_then(|mut file| file.read(&mut head))
+        .unwrap_or(0);
+    let bytes = &head[..read];
+    if bytes.starts_with(b"fLaC") {
+        "flac"
+    } else if bytes.starts_with(b"OggS") {
+        "ogg"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        "wav"
+    } else if bytes.get(4..8) == Some(b"ftyp") {
+        "m4a"
+    } else if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        "webm"
+    } else {
+        "mp3"
+    }
+}
+
+fn safe_download_name(title: &str, artist: &str, extension: &str) -> String {
+    let mut base = if artist.trim().is_empty() {
+        title.trim().to_string()
+    } else {
+        format!("{} - {}", artist.trim(), title.trim())
+    };
+    if base.trim().is_empty() {
+        base = "audio".to_string();
+    }
+    for bad in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'] {
+        base = base.replace(bad, "_");
+    }
+    let base = base.trim().trim_end_matches('.').to_string();
+    format!("{}.{}", if base.is_empty() { "audio" } else { &base }, extension)
+}
+
+#[tauri::command]
+pub fn get_default_download_dir() -> Result<String, String> {
+    dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Music")))
+        .map(|dir| dir.to_string_lossy().to_string())
+        .ok_or_else(|| "cannot determine a download directory".to_string())
+}
+
+#[tauri::command]
+pub async fn download_remote_to(
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    dest_dir: Option<String>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let mut request = client.get(&url);
+    if let Some(headers) = headers {
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("download failed: {}", response.status()));
+    }
+    let disposition = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split("filename=\"").nth(1))
+        .and_then(|value| value.split('"').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download.bin")
+        .to_string();
+    let directory = dest_dir
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| dirs::download_dir())
+        .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+        .ok_or_else(|| "cannot determine a download directory".to_string())?;
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut destination = directory.join(&disposition);
+    let stem = destination
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+    let extension = destination
+        .extension()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "bin".to_string());
+    let mut suffix = 1;
+    while destination.exists() {
+        destination = directory.join(format!("{stem} ({suffix}).{extension}"));
+        suffix += 1;
+    }
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&destination, bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(destination.to_string_lossy().to_string())
+}
+
+/// Download a song to a user-visible folder without converting the online
+/// song into a local library entry. The cache copy remains what playback uses.
+#[tauri::command]
+pub async fn download_song_to(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    dest_dir: Option<String>,
+) -> Result<String, String> {
+    let song_id = SongId(id.clone());
+    let song = state
+        .db
+        .get_song(&song_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "song not found".to_string())?;
+
+    let data_dir = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let cache = crate::features::cache::CacheManager::new(
+        state.db.as_ref().clone(),
+        &data_dir.join("vide"),
+    )
+    .await
+    .map_err(|e| format!("cache init: {e}"))?;
+
+    let cached_path = if let Some(cached) = cache
+        .get_cached(&song_id)
+        .await
+        .map_err(|e| format!("cache lookup: {e}"))?
+    {
+        cached
+    } else {
+        let (platform, source_id) = song
+            .sources
+            .first()
+            .map(|source| (source.platform.clone(), source.id.clone()))
+            .ok_or_else(|| "no online source to download".to_string())?;
+        let plugins = state
+            .plugins
+            .as_ref()
+            .ok_or_else(|| "plugin system not available".to_string())?;
+        let descriptor = plugins.stream(&platform, &source_id, &id).await?;
+        cache
+            .download_from_descriptor(&song_id, &descriptor)
+            .await
+            .map_err(|e| format!("download: {e}"))?
+    };
+
+    let directory = dest_dir
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| dirs::download_dir())
+        .or_else(|| dirs::home_dir().map(|home| home.join("Music")))
+        .ok_or_else(|| "cannot determine a download directory".to_string())?;
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|e| format!("create download dir: {e}"))?;
+
+    let extension = detect_audio_extension(&cached_path);
+    let mut destination = directory.join(safe_download_name(
+        &song.metadata.display_title.clone().unwrap_or(song.title.clone()),
+        &song.metadata.artist_override.clone().unwrap_or(song.artist.clone()),
+        extension,
+    ));
+    let stem = destination
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "audio".to_string());
+    let mut suffix = 1;
+    while destination.exists() {
+        destination = directory.join(format!("{stem} ({suffix}).{extension}"));
+        suffix += 1;
+    }
+
+    tokio::fs::copy(&cached_path, &destination)
+        .await
+        .map_err(|e| format!("save download: {e}"))?;
+    Ok(destination.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub async fn download_song(
     state: tauri::State<'_, AppState>,
@@ -185,23 +418,11 @@ pub async fn download_song(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "song not found".to_string())?;
 
-    // Already a local file — nothing to download.
-    if !song.paths.is_empty() {
+    // Already a local file (and the file really exists) — nothing to download.
+    // Checking existence also avoids treating a deleted local path as valid.
+    if song.paths.iter().any(|path| path.exists()) {
         return Ok(song.paths.len() as u64);
     }
-
-    // Need a plugin stream descriptor to know what to fetch.
-    let (platform, source_id) = song
-        .sources
-        .first()
-        .map(|s| (s.platform.clone(), s.id.clone()))
-        .ok_or_else(|| "no online source to download".to_string())?;
-
-    let plugins = state
-        .plugins
-        .as_ref()
-        .ok_or_else(|| "plugin system not available".to_string())?;
-    let descriptor = plugins.stream(&platform, &source_id, &id).await?;
 
     // Build a CacheManager rooted in the app data directory.
     let data_dir = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -213,14 +434,39 @@ pub async fn download_song(
     .await
     .map_err(|e| format!("cache init: {e}"))?;
 
-    let cached_path = cache
-        .download_from_descriptor(&song_id, &descriptor)
+    // Prefer an existing, complete cache copy. Only fetch a new stream when
+    // there is no valid cache entry (missing file, wrong size, or invalid).
+    let cached_path = if let Some(cached) = cache
+        .get_cached(&song_id)
         .await
-        .map_err(|e| format!("download: {e}"))?;
+        .map_err(|e| format!("cache lookup: {e}"))?
+    {
+        cached
+    } else {
+        // Need a plugin stream descriptor to know what to fetch.
+        let (platform, source_id) = song
+            .sources
+            .first()
+            .map(|s| (s.platform.clone(), s.id.clone()))
+            .ok_or_else(|| "no online source to download".to_string())?;
+
+        let plugins = state
+            .plugins
+            .as_ref()
+            .ok_or_else(|| "plugin system not available".to_string())?;
+        let descriptor = plugins.stream(&platform, &source_id, &id).await?;
+
+        cache
+            .download_from_descriptor(&song_id, &descriptor)
+            .await
+            .map_err(|e| format!("download: {e}"))?
+    };
 
     // Register the cached file as a local path (dedupe).
     let mut song = song;
-    song.paths.push(cached_path);
+    if !song.paths.contains(&cached_path) {
+        song.paths.push(cached_path);
+    }
     state
         .db
         .upsert_song(&song)
@@ -235,33 +481,41 @@ pub async fn search_songs(
     state: tauri::State<'_, AppState>,
     query: String,
 ) -> Result<Vec<Song>, String> {
-    crate::features::search::search(&*state.db, &query).await
+    let roots = state.config.lock().await.library_roots.clone();
+    let mut songs = crate::features::search::search(&*state.db, &query).await?;
+    songs.retain(|song| visible_in_library(song, &roots));
+    Ok(songs)
 }
 
 #[tauri::command]
-pub async fn scan_library(state: tauri::State<'_, AppState>) -> Result<ScanResult, String> {
-    let config = state.config.lock().await;
-    let mut total = ScanResult::default();
+pub async fn scan_library(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<ScanResult, String> {
+    let (roots, excludes) = {
+        let config = state.config.lock().await;
+        (config.library_roots.clone(), config.exclude_roots.clone())
+    };
 
-    // Full re-scan semantics: replace the previous local result set instead of
-    // merging with stale entries, so songs that no longer exist are dropped.
-    let cleared = state
+    let extensions = state
         .db
-        .clear_local_songs()
+        .load_app_settings()
         .await
-        .map_err(|e| e.to_string())?;
-    total.skipped += cleared;
+        .map(|settings| settings.scan_extensions)
+        .unwrap_or_else(|_| crate::models::settings::default_scan_extensions());
+    let extensions = if extensions.is_empty() {
+        crate::models::settings::default_scan_extensions()
+    } else {
+        extensions
+    };
 
-    for root in &config.library_roots {
-        let result = crate::features::library::scan_root(&*state.db, root).await;
-        total.scanned += result.scanned;
-        total.added += result.added;
-        total.updated += result.updated;
-        total.skipped += result.skipped;
-        total.errors.extend(result.errors);
-    }
-
-    Ok(total)
+    // Merge instead of deleting every local song first: tags, playlist
+    // entries and overrides on existing files must survive a rescan.
+    let result =
+        crate::features::library::scan_roots(&state.db, &roots, &excludes, &extensions).await;
+    // Refresh any open list view (and pick up newly excluded folders).
+    let _ = app.emit("vide:library-changed", ());
+    Ok(result)
 }
 
 // ── Playback ──────────────────────────────────────────────────────
@@ -318,7 +572,7 @@ pub async fn get_lyrics(
 
     // For a local file, re-read the embedded lyrics tag (e.g. ID3 USLT),
     // cache it on the song, and return it.
-    if let Some(path) = song.paths.first() {
+    if let Some(path) = song.paths.iter().find(|path| path.exists()) {
         if let Ok(file_meta) = crate::features::metadata::extract_file_metadata(path) {
             if let Some(lyrics) = &file_meta.lyrics {
                 if !lyrics.is_empty() {
@@ -331,14 +585,111 @@ pub async fn get_lyrics(
         }
     }
 
-    // Plugin lyrics capability (future use)
-    // if let Some(plugins) = state.plugins.as_ref() {
-    //     if let Some(source) = song.sources.first() {
-    //         ...
-    //     }
-    // }
+    // Online lyrics through the platform's lyrics provider.
+    if let Some(plugins) = state.plugins.as_ref() {
+        if let Some(source) = song.sources.first() {
+            if let Ok(Some(lyrics)) = plugins.lyrics(&source.platform, &source.id).await {
+                if !lyrics.text.is_empty() {
+                    let mut song = song;
+                    song.metadata.lyrics = Some(lyrics.text.clone());
+                    let _ = state.db.upsert_song(&song).await;
+                    return Ok(Some(lyrics.text));
+                }
+            }
+        }
+    }
 
     Ok(None)
+}
+
+/// Queue and play a list of online search results. Search results are created
+/// as Song rows (without resolving each stream) so next/prev walks the search
+/// or playlist result list rather than the local library query.
+#[tauri::command]
+pub async fn play_online_results(
+    state: tauri::State<'_, AppState>,
+    results: Vec<Track>,
+    index: usize,
+) -> Result<PlaybackStatus, String> {
+    if results.is_empty() {
+        return Err("empty result list".to_string());
+    }
+    let mut ids: Vec<String> = Vec::new();
+    let mut start_index: isize = 0;
+
+    for (position, item) in results.iter().enumerate() {
+        if item.platform.is_empty() || item.source_id.is_empty() {
+            continue;
+        }
+        let song_id = song_id_from_source(&item.platform, &item.source_id);
+        if state
+            .db
+            .get_song(&song_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            let song = Song {
+                id: song_id.clone(),
+                title: if item.title.is_empty() {
+                    "Unknown".to_string()
+                } else {
+                    item.title.clone()
+                },
+                artist: item.artist.clone().unwrap_or_default(),
+                album: item.album.clone().unwrap_or_default(),
+                tags: Vec::new(),
+                sources: vec![Source {
+                    platform: item.platform.clone(),
+                    id: item.source_id.clone(),
+                }],
+                paths: Vec::new(),
+                metadata: SongMetadata {
+                    duration: item.duration,
+                    cover_url: item.cover_url.clone(),
+                    ..Default::default()
+                },
+            };
+            state
+                .db
+                .upsert_song(&song)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        if position == index {
+            start_index = ids.len() as isize;
+        }
+        ids.push(song_id.0);
+    }
+
+    if ids.is_empty() {
+        return Err("no valid results".to_string());
+    }
+    let mut player = state.player.lock().await;
+    player.set_queue(ids, start_index).await
+}
+
+#[tauri::command]
+pub async fn play_remote_media(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    position_secs: Option<f64>,
+) -> Result<PlaybackStatus, String> {
+    let descriptor = StreamDescriptor::UrlStream {
+        id,
+        url,
+        headers,
+    };
+    let mut player = state.player.lock().await;
+    player.play(&descriptor).await?;
+    if let Some(position) = position_secs {
+        if position > 0.0 {
+            let _ = player.seek_when_ready(position).await;
+        }
+    }
+    Ok(player.status())
 }
 
 #[tauri::command]
@@ -455,29 +806,19 @@ pub async fn set_mute(
 pub async fn search_online(
     state: tauri::State<'_, AppState>,
     query: String,
-    platform: Option<String>,
-) -> Result<Vec<SearchResultItem>, String> {
+    platform: String,
+    limit: Option<u32>,
+) -> Result<Vec<Track>, String> {
+    if platform.trim().is_empty() {
+        return Err("platform is required".to_string());
+    }
     let plugins = state
         .plugins
         .as_ref()
         .ok_or_else(|| "plugin system not available".to_string())?;
-
-    if let Some(platform) = platform {
-        plugins.search(&platform, &query).await
-    } else {
-        // Search all platforms that have a registered search provider
-        let mut all_results = Vec::new();
-        for manifest in &plugins.manifests {
-            for cap in &manifest.capabilities {
-                if cap.capability == "search" {
-                    if let Ok(mut results) = plugins.search(&cap.platform, &query).await {
-                        all_results.append(&mut results);
-                    }
-                }
-            }
-        }
-        Ok(all_results)
-    }
+    plugins
+        .search(&platform, &query, limit.unwrap_or(20))
+        .await
 }
 
 /// Resolve an online song by platform + id, creating a Song in the DB if
@@ -486,9 +827,9 @@ pub async fn search_online(
 pub async fn resolve_song(
     state: tauri::State<'_, AppState>,
     platform: String,
-    id: String,
+    source_id: String,
 ) -> Result<Song, String> {
-    let song_id = song_id_from_source(&platform, &id);
+    let song_id = song_id_from_source(&platform, &source_id);
 
     // Return existing song if already in DB
     if let Some(song) = state
@@ -505,7 +846,7 @@ pub async fn resolve_song(
         .plugins
         .as_ref()
         .ok_or_else(|| "plugin system not available".to_string())?;
-    let item = plugins.resolve(&platform, &id).await?;
+    let item = plugins.resolve(&platform, &source_id).await?;
 
     let title = item.title.clone();
     let artist = item.artist.clone().unwrap_or_else(|| "Unknown".to_string());
@@ -519,11 +860,12 @@ pub async fn resolve_song(
         tags: Vec::new(),
         sources: vec![Source {
             platform,
-            id,
+            id: source_id,
         }],
         paths: Vec::new(),
         metadata: SongMetadata {
             duration: item.duration,
+            cover_url: item.cover_url.clone(),
             ..Default::default()
         },
     };
@@ -561,7 +903,7 @@ pub async fn import_playlist_url(
 
     let mut entries: Vec<crate::models::playlist::PlaylistEntry> = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
-        let song_id = crate::infra::hash::song_id_from_source(&item.platform, &item.id);
+        let song_id = crate::infra::hash::song_id_from_source(&item.platform, &item.source_id);
 
         // Upsert the song if not already present.
         if state
@@ -582,11 +924,12 @@ pub async fn import_playlist_url(
                 tags: Vec::new(),
                 sources: vec![Source {
                     platform: item.platform.clone(),
-                    id: item.id.clone(),
+                    id: item.source_id.clone(),
                 }],
                 paths: Vec::new(),
                 metadata: SongMetadata {
                     duration: item.duration,
+                    cover_url: item.cover_url.clone(),
                     ..Default::default()
                 },
             };
@@ -662,8 +1005,17 @@ pub async fn save_search_preset(
         return Ok(saved);
     }
 
+    // len()+1 collides after deleting a middle item; take the highest existing
+    // numeric suffix instead so ids stay unique.
+    let next_id = presets
+        .iter()
+        .filter_map(|p| p.id.strip_prefix("preset_"))
+        .filter_map(|suffix| suffix.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
     let preset = crate::models::SearchPreset {
-        id: format!("preset_{}", presets.len() + 1),
+        id: format!("preset_{next_id}"),
         name,
         query,
     };
@@ -720,6 +1072,232 @@ pub async fn set_last_search_preset(
         .map_err(|e| e.to_string())
 }
 
+// ── Library query history ────────────────────────────────────────
+
+/// Recent library queries + the query the list should restore on launch.
+/// Kept next to the saved-query commands and stored in SQLite, not
+/// localStorage.
+#[derive(Debug, Clone, Serialize)]
+pub struct LibraryQueryState {
+    pub history: Vec<String>,
+    pub last_query: String,
+}
+
+fn decode_query_history(value: Option<serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+        .unwrap_or_default()
+}
+
+async fn load_library_query_state(
+    db: &crate::infra::db::Database,
+) -> Result<LibraryQueryState, String> {
+    let history = decode_query_history(
+        db.get_setting("query_history")
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    let last_query = db
+        .get_setting("last_library_query")
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Ok(LibraryQueryState {
+        history,
+        last_query,
+    })
+}
+
+/// Load the query history and the last executed library query.
+#[tauri::command]
+pub async fn get_library_query_state(
+    state: tauri::State<'_, AppState>,
+) -> Result<LibraryQueryState, String> {
+    load_library_query_state(&state.db).await
+}
+
+/// Set the restored query without touching the history (used by column-header
+/// sorting, which would otherwise flood the history).
+#[tauri::command]
+pub async fn set_last_library_query(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<(), String> {
+    state
+        .db
+        .update_setting("last_library_query", &serde_json::json!(query.trim()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Record a query as executed: it becomes the restored query and is pushed to
+/// the front of the history list (deduplicated, capped at 30).
+#[tauri::command]
+pub async fn record_library_query(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<LibraryQueryState, String> {
+    let query = query.trim().to_string();
+    let mut history = decode_query_history(
+        state
+            .db
+            .get_setting("query_history")
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    history.retain(|entry| !entry.is_empty() && entry != &query);
+    if !query.is_empty() {
+        history.insert(0, query.clone());
+        history.truncate(30);
+    }
+    state
+        .db
+        .update_setting("query_history", &serde_json::json!(history))
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .update_setting("last_library_query", &serde_json::json!(query))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(LibraryQueryState {
+        history,
+        last_query: query,
+    })
+}
+
+/// Remove one entry from the library query history.
+#[tauri::command]
+pub async fn remove_query_history(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<LibraryQueryState, String> {
+    let mut history = decode_query_history(
+        state
+            .db
+            .get_setting("query_history")
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    history.retain(|entry| entry != &query);
+    state
+        .db
+        .update_setting("query_history", &serde_json::json!(history))
+        .await
+        .map_err(|e| e.to_string())?;
+    load_library_query_state(&state.db).await
+}
+
+/// Clear the query history without touching the last executed query.
+#[tauri::command]
+pub async fn clear_query_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<LibraryQueryState, String> {
+    state
+        .db
+        .update_setting("query_history", &serde_json::json!([]))
+        .await
+        .map_err(|e| e.to_string())?;
+    load_library_query_state(&state.db).await
+}
+
+// Online search history is a separate list from the library query history.
+// It is persisted in SQLite for the same reason: the search page is not the
+// only place that may want to read it later.
+
+#[tauri::command]
+pub async fn get_online_search_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    Ok(decode_query_history(
+        state
+            .db
+            .get_setting("online_search_history")
+            .await
+            .map_err(|e| e.to_string())?,
+    ))
+}
+
+#[tauri::command]
+pub async fn add_online_search_history(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let query = query.trim().to_string();
+    let mut history = decode_query_history(
+        state
+            .db
+            .get_setting("online_search_history")
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    history.retain(|entry| !entry.is_empty() && entry != &query);
+    if !query.is_empty() {
+        history.insert(0, query);
+        history.truncate(20);
+    }
+    state
+        .db
+        .update_setting("online_search_history", &serde_json::json!(history))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(history)
+}
+
+#[tauri::command]
+pub async fn set_online_search_history(
+    state: tauri::State<'_, AppState>,
+    history: Vec<String>,
+) -> Result<(), String> {
+    let history: Vec<String> = history
+        .into_iter()
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .take(20)
+        .collect();
+    state
+        .db
+        .update_setting("online_search_history", &serde_json::json!(history))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── Generic client/UI state ──────────────────────────────────────
+
+/// Get a namespaced UI-state blob (column layout, window geometry, scroll
+/// position, ...). These live in the same SQLite settings table so the app no
+/// longer treats localStorage as a second source of truth.
+#[tauri::command]
+pub async fn get_client_state(
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<Option<serde_json::Value>, String> {
+    state
+        .db
+        .get_setting(&format!("client:{key}"))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Store a UI-state blob under a namespaced key.
+#[tauri::command]
+pub async fn set_client_state(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("empty client state key".to_string());
+    }
+    state
+        .db
+        .update_setting(&format!("client:{key}"), &value)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── App Settings ──────────────────────────────────────────────────
 
 /// Get the full app settings object.
@@ -757,6 +1335,214 @@ pub async fn get_last_played(
         .load_last_played()
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Reveal a local file in the system file manager, selecting it when the
+/// platform supports it.
+///
+/// The opener plugin's Linux path relies entirely on the D-Bus
+/// FileManager1/xdg-desktop-portal interfaces, which are missing on many
+/// desktops (and then report a failure even though the file exists). This
+/// command uses the platform's native facility and falls back to opening the
+/// containing folder, so "details" never reports a false failure when the
+/// folder could be opened.
+#[tauri::command]
+pub async fn reveal_local_file(path: String) -> Result<(), String> {
+    // File-manager commands can block (D-Bus round-trip, xdg-open); keep that
+    // off the async runtime's worker threads.
+    tauri::async_runtime::spawn_blocking(move || {
+        let requested = PathBuf::from(&path);
+        if !requested.exists() {
+            return Err(format!("file not found: {}", requested.display()));
+        }
+        // Resolve symlinks so the file manager selects the real entry.
+        let resolved = std::fs::canonicalize(&requested).unwrap_or(requested);
+        reveal_in_file_manager(&resolved)
+    })
+    .await
+    .map_err(|e| format!("reveal task failed: {e}"))?
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("explorer");
+    // Single command-line token, otherwise explorer treats the path as a
+    // separate item to open instead of the item to select.
+    cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+    // explorer.exe reports a non-zero exit code even on success; spawning it
+    // is the success condition.
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("open -R failed".to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    // Best effort: org.freedesktop.FileManager1 can both open the folder and
+    // select the item. dbus-send avoids pulling in a D-Bus client crate.
+    if let Some(uri) = file_uri(path) {
+        let ok = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &format!("array:string:{uri}"),
+                "string:",
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if ok {
+            return Ok(());
+        }
+    }
+
+    // Fallback: open the containing folder. Selecting the item is nicer, but
+    // opening the folder is still useful and must not be reported as failure.
+    let dir = path.parent().unwrap_or(path);
+    for opener in ["gio", "xdg-open"] {
+        let ok = std::process::Command::new(opener)
+            .arg(dir)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if ok {
+            return Ok(());
+        }
+    }
+    Err("could not open the file manager".to_string())
+}
+
+/// Percent-encode a filesystem path into a file:// URI for D-Bus.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn file_uri(path: &Path) -> Option<String> {
+    let raw = path.to_str()?;
+    let mut out = String::from("file://");
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    Some(out)
+}
+
+// ── Song details (hover card) ─────────────────────────
+
+/// Technical information about one local file of a song.
+#[derive(Debug, Clone, Serialize)]
+pub struct SongFileInfo {
+    pub path: String,
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Unix timestamp (seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitrate: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+}
+
+/// Everything the list's hover card needs: the song plus per-file technical
+/// details that are not stored in the database.
+#[derive(Debug, Clone, Serialize)]
+pub struct SongDetails {
+    pub song: Song,
+    pub files: Vec<SongFileInfo>,
+}
+
+fn inspect_file(path: &Path) -> SongFileInfo {
+    use lofty::prelude::AudioFile;
+
+    let mut info = SongFileInfo {
+        path: path.to_string_lossy().to_string(),
+        exists: false,
+        size: None,
+        modified: None,
+        format: path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase()),
+        bitrate: None,
+        sample_rate: None,
+        channels: None,
+        bit_depth: None,
+        duration: None,
+    };
+
+    if let Ok(meta) = std::fs::metadata(path) {
+        info.exists = true;
+        info.size = Some(meta.len());
+        info.modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+    }
+
+    if info.exists {
+        if let Ok(tagged) = lofty::read_from_path(path) {
+            let properties = tagged.properties();
+            info.duration = Some(properties.duration().as_secs_f64());
+            info.bitrate = properties.audio_bitrate();
+            info.sample_rate = properties.sample_rate();
+            info.channels = properties.channels();
+            info.bit_depth = properties.bit_depth();
+        }
+    }
+
+    info
+}
+
+/// Full details for the hover card: the song row data plus file stats and
+/// audio properties for each local path.
+#[tauri::command]
+pub async fn get_song_details(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<SongDetails, String> {
+    let song = state
+        .db
+        .get_song(&SongId(id))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "song not found".to_string())?;
+
+    let paths = song.paths.clone();
+    let files = tauri::async_runtime::spawn_blocking(move || {
+        paths.iter().map(|path| inspect_file(path)).collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| format!("song details task failed: {e}"))?;
+
+    Ok(SongDetails { song, files })
 }
 
 // ── Caches ─────────────────────────────────────────────
@@ -994,7 +1780,15 @@ pub fn set_global_shortcuts(
             continue;
         }
         let action = item.action.clone();
-        match manager.on_shortcut(accelerator.as_str(), move |app, _shortcut, _event| {
+        match manager.on_shortcut(accelerator.as_str(), move |app, _shortcut, event| {
+            // global-hotkey reports both the press and the release of a
+            // hotkey (on X11 and macOS explicitly, on Windows through a
+            // release poll). Forwarding every event made each shortcut fire
+            // twice — e.g. "next track" skipped two songs. Only the press is
+            // the shortcut.
+            if event.state() != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                return;
+            }
             // The frontend owns the action itself; just announce which one.
             let _ = app.emit("shortcut", action.clone());
         }) {
@@ -1041,6 +1835,54 @@ pub async fn autocomplete(
     prefix: String,
 ) -> Result<Vec<String>, String> {
     crate::features::search::autocomplete(&*state.db, &prefix, 10)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Distinct values for a CONTAINS field, used by the query editor's
+/// completion. "song_metadata" is the union of title/artist/album.
+#[tauri::command]
+pub async fn query_field_values(
+    state: tauri::State<'_, AppState>,
+    field: String,
+    prefix: String,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let limit = limit.clamp(1, 50);
+    if field == "song_metadata" {
+        let mut values = Vec::new();
+        for name in ["title", "artist", "album"] {
+            if let Ok(part) = state
+                .db
+                .query_field_values(name, &prefix, limit)
+                .await
+            {
+                values.extend(part);
+            }
+        }
+        values.sort_by_key(|value| value.to_lowercase());
+        values.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        values.truncate(limit);
+        return Ok(values);
+    }
+    state
+        .db
+        .query_field_values(&field, &prefix, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Values of one tag namespace, used after "namespace:" in the query editor.
+#[tauri::command]
+pub async fn tag_values(
+    state: tauri::State<'_, AppState>,
+    namespace: String,
+    prefix: String,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    state
+        .db
+        .tag_values(&namespace, &prefix, limit.clamp(1, 50))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1100,16 +1942,6 @@ pub async fn get_namespaces(state: tauri::State<'_, AppState>) -> Result<Vec<Str
 // ── Playlists ─────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn import_m3u(
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<crate::models::playlist::Playlist, String> {
-    crate::features::playlist::import_m3u(&*state.db, std::path::Path::new(&path))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn get_playlist(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -1132,19 +1964,34 @@ pub async fn list_playlists(
         .map_err(|e| e.to_string())
 }
 
+/// Fetch a remote cover image with browser-like headers and return a data URL.
+/// Some CDNs (notably Bilibili) reject requests without a Referer/User-Agent.
 #[tauri::command]
-pub async fn export_playlist(
-    state: tauri::State<'_, AppState>,
-    playlist_id: String,
-    output_path: String,
-) -> Result<(), String> {
-    crate::features::playlist::export_playlist(
-        &*state.db,
-        &crate::models::playlist::PlaylistId(playlist_id),
-        std::path::Path::new(&output_path),
-    )
-    .await
-    .map_err(|e| e.to_string())
+pub async fn fetch_remote_image(
+    url: String,
+    referer: Option<String>,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let mut request = client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
+    if let Some(referer) = referer {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{content_type};base64,{encoded}"))
 }
 
 // ── Server ────────────────────────────────────────────────────────

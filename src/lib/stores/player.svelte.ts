@@ -1,4 +1,26 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  getPlaybackTarget,
+  invoke,
+  invokeLocal,
+  isRemoteMode,
+  remoteMediaUrl,
+  subscribePlayerStatus,
+} from "$lib/transport";
+import { isTauri } from "$lib/isTauri";
+
+function isRemoteClient(): boolean {
+  return isRemoteMode() && getPlaybackTarget() === "client";
+}
+
+function isBrowserClient(): boolean {
+  return !isTauri && getPlaybackTarget() === "client";
+}
+
+let browserAudio: HTMLAudioElement | null = null;
+
+async function statusInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  return isRemoteClient() ? invokeLocal<T>(command, args) : invoke<T>(command, args);
+}
 
 class PlayerStore {
   /** Currently playing song ID, or null if stopped. */
@@ -18,8 +40,12 @@ class PlayerStore {
   async setVolume(v: number) {
     this.volume = Math.max(0, Math.min(100, Math.round(v)));
     if (this.volume > 0) this.muted = false;
+    if (isBrowserClient()) {
+      this.browserAudioElement().volume = this.volume / 100;
+      return;
+    }
     try {
-      await invoke("set_volume", { volume: this.volume });
+      await statusInvoke("set_volume", { volume: this.volume });
     } catch (e) {
       console.error("set_volume error:", e);
     }
@@ -28,8 +54,12 @@ class PlayerStore {
   /** Mute / unmute playback. */
   async setMuted(m: boolean) {
     this.muted = m;
+    if (isBrowserClient()) {
+      this.browserAudioElement().muted = m;
+      return;
+    }
     try {
-      await invoke("set_mute", { muted: m });
+      await statusInvoke("set_mute", { muted: m });
     } catch (e) {
       console.error("set_mute error:", e);
     }
@@ -38,8 +68,12 @@ class PlayerStore {
   /** Set playback speed (rate) — persists to the backend too. */
   async setSpeed(rx: number) {
     this.speed = rx;
+    if (isBrowserClient()) {
+      this.browserAudioElement().playbackRate = rx;
+      return;
+    }
     try {
-      await invoke("set_speed", { speed: rx });
+      await statusInvoke("set_speed", { speed: rx });
     } catch (e) {
       console.error("set_speed error:", e);
     }
@@ -83,12 +117,41 @@ class PlayerStore {
   _saveTick = 0;
   // If set, the next play should seek to this position (startup restore).
   _pendingSeek = 0;
+  private statusTimer: ReturnType<typeof setInterval> | undefined;
+  private statusStream: (() => void) | null = null;
+  private updatesStarted = false;
+
+  private browserAudioElement(): HTMLAudioElement {
+    if (!browserAudio) {
+      const audio = new Audio();
+      audio.preload = "auto";
+      browserAudio = audio;
+      audio.addEventListener("timeupdate", () => {
+        this.elapsed = audio.currentTime || 0;
+      });
+      audio.addEventListener("durationchange", () => {
+        this.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      });
+      audio.addEventListener("play", () => {
+        this.isPlaying = true;
+      });
+      audio.addEventListener("pause", () => {
+        this.isPlaying = false;
+      });
+      audio.addEventListener("ended", () => {
+        this.isPlaying = false;
+        void this.playNext(true);
+      });
+    }
+    return browserAudio;
+  }
 
   /** Set the active queue (the list the user is playing from) and register it
    * on the Rust backend, which owns all sequencing. */
   async setQueue(items: { id: string; title: string; artist: string; album: string }[]) {
     this.queue = items;
     this.currentIndex = items.findIndex((i) => i.id === this.mediaId);
+    if (isRemoteClient() || isBrowserClient()) return;
     try {
       await invoke("set_play_queue", {
         ids: items.map((i) => i.id),
@@ -103,6 +166,10 @@ class PlayerStore {
   async playFromList(items: { id: string; title: string; artist: string; album: string }[], id: string) {
     this.queue = items;
     this.currentIndex = items.findIndex((i) => i.id === id);
+    if (isRemoteClient() || isBrowserClient()) {
+      await this.playId(id);
+      return;
+    }
     const idx = this.currentIndex;
     try {
       // Tell the backend the queue and which index to start playing.
@@ -121,7 +188,13 @@ class PlayerStore {
    * the player bar and detail page are not reset when pausing. */
   async togglePause() {
     try {
-      const status = await invoke<{
+      if (isBrowserClient()) {
+        const audio = this.browserAudioElement();
+        if (audio.paused) await audio.play();
+        else audio.pause();
+        return;
+      }
+      const status = await statusInvoke<{
         state: string;
         media_id?: string;
         elapsed_secs?: number;
@@ -155,7 +228,21 @@ class PlayerStore {
   /** Legitimately stop (deselect) the current song. */
   async stop() {
     try {
-      await invoke("stop_playback");
+      if (isBrowserClient()) {
+        const audio = this.browserAudioElement();
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        this.isPlaying = false;
+        this.mediaId = null;
+        this.cover = null;
+        this.title = "未在播放";
+        this.artist = "选择一首歌曲开始播放";
+        this.duration = 0;
+        this.elapsed = 0;
+        return;
+      }
+      await statusInvoke("stop_playback");
       this.isPlaying = false;
       this.mediaId = null;
       this.cover = null;
@@ -168,12 +255,32 @@ class PlayerStore {
     }
   }
 
+  async seekTo(target: number) {
+    if (this.duration <= 0) return;
+    const position = Math.max(0, Math.min(this.duration, target));
+    try {
+      if (isBrowserClient()) {
+        this.browserAudioElement().currentTime = position;
+      } else {
+        await statusInvoke("seek", { positionSecs: position });
+      }
+      this.elapsed = position;
+    } catch (e) {
+      console.error("seek error:", e);
+    }
+  }
+
   /** Seek by a relative amount (seconds) — used by the seek shortcuts. */
   async seekBy(delta: number) {
     if (!this.mediaId || this.duration <= 0) return;
     const target = Math.max(0, Math.min(this.duration, this.elapsed + delta));
     try {
-      await invoke("seek", { positionSecs: target });
+      if (isBrowserClient()) {
+        this.browserAudioElement().currentTime = target;
+        this.elapsed = target;
+        return;
+      }
+      await statusInvoke("seek", { positionSecs: target });
       this.elapsed = target;
     } catch (e) {
       console.error("seek error:", e);
@@ -183,6 +290,12 @@ class PlayerStore {
   /** Play the next song — sequencing is decided by the Rust backend. */
   async playNext(auto = false): Promise<boolean> {
     try {
+      if (isRemoteClient() || isBrowserClient()) {
+        if (this.queue.length === 0) return false;
+        const next = (Math.max(this.currentIndex, -1) + 1) % this.queue.length;
+        await this.playId(this.queue[next].id);
+        return true;
+      }
       const status = await invoke<{
         state: string;
         media_id?: string;
@@ -200,6 +313,12 @@ class PlayerStore {
   /** Play the previous song — sequencing handled by the backend. */
   async playPrev(): Promise<boolean> {
     try {
+      if (isRemoteClient() || isBrowserClient()) {
+        if (this.queue.length === 0) return false;
+        const prev = (this.currentIndex <= 0 ? this.queue.length : this.currentIndex) - 1;
+        await this.playId(this.queue[prev].id);
+        return true;
+      }
       const status = await invoke<{
         state: string;
         media_id?: string;
@@ -220,6 +339,61 @@ class PlayerStore {
     const position = resumeAt > 0 ? resumeAt : this._pendingSeek;
     this._pendingSeek = 0;
     try {
+      if (isBrowserClient()) {
+        const media = remoteMediaUrl(id);
+        if (!media) throw new Error("browser media URL unavailable");
+        const audio = this.browserAudioElement();
+        this.mediaId = id;
+        this.elapsed = 0;
+        this.duration = 0;
+        audio.src = media.url;
+        audio.volume = this.volume / 100;
+        audio.muted = this.muted;
+        audio.playbackRate = this.speed;
+        await audio.play();
+        if (position > 0) {
+          audio.currentTime = position;
+          this.elapsed = position;
+        }
+        try {
+          const song = await invoke<{
+            id: string;
+            title: string;
+            artist: string;
+            album: string;
+            metadata?: {
+              display_title?: string;
+              artist_override?: string;
+              album_override?: string;
+              cover_url?: string;
+            };
+          }>("get_song", { id });
+          this.title = song.metadata?.display_title ?? song.title;
+          this.artist = song.metadata?.artist_override ?? song.artist;
+          this.album = song.metadata?.album_override ?? song.album ?? "";
+          this.cover = song.metadata?.cover_url ?? null;
+        } catch {
+          /* keep queue metadata */
+        }
+        return;
+      }
+      if (isRemoteClient()) {
+        const media = remoteMediaUrl(id);
+        if (!media) throw new Error("remote media URL unavailable");
+        const status = await invokeLocal<{
+          state: string;
+          media_id?: string;
+          elapsed_secs?: number;
+          duration_secs?: number;
+        }>("play_remote_media", {
+          id,
+          url: media.url,
+          headers: media.headers,
+          positionSecs: position > 0 ? position : null,
+        });
+        await this._syncStatus(status);
+        return;
+      }
       const status = await invoke<{
         state: string;
         media_id?: string;
@@ -249,13 +423,19 @@ class PlayerStore {
           title: string;
           artist: string;
           album: string;
-          metadata?: { display_title?: string; artist_override?: string; album?: string };
+          metadata?: {
+            display_title?: string;
+            artist_override?: string;
+            album_override?: string;
+            album?: string;
+            cover_url?: string;
+          };
         }>("get_song", { id: newId });
         if (song) {
           this.title = song.metadata?.display_title ?? song.title;
           this.artist = song.metadata?.artist_override ?? song.artist;
-          this.album = song.metadata?.album ?? song.album ?? "";
-          this.cover = null;
+          this.album = song.metadata?.album_override ?? song.metadata?.album ?? song.album ?? "";
+          this.cover = song.metadata?.cover_url ?? null;
         }
       } catch {
         /* not fatal */
@@ -297,16 +477,46 @@ class PlayerStore {
     }
   }
 
+  startStatusUpdates() {
+    if (this.updatesStarted || isBrowserClient()) return;
+    this.updatesStarted = true;
+    void this.poll();
+    if (isRemoteClient() || (isTauri && !isRemoteMode())) {
+      this.statusTimer = setInterval(() => void this.poll(), 1000);
+      return;
+    }
+    this.statusStream = subscribePlayerStatus((status) => {
+      void this.applyStatus(status);
+    });
+    if (!this.statusStream) {
+      this.statusTimer = setInterval(() => void this.poll(), 1000);
+    }
+  }
+
   /** Poll the backend for current playback status. */
   async poll() {
+    if (isBrowserClient()) return;
     try {
       const status: {
         state: string;
         media_id?: string;
         elapsed_secs?: number;
         duration_secs?: number;
-      } = await invoke("get_player_status");
+      } = isRemoteClient()
+        ? await invokeLocal("get_player_status")
+        : await invoke("get_player_status");
+      await this.applyStatus(status);
+    } catch {
+      /* backend not ready yet */
+    }
+  }
 
+  private async applyStatus(status: {
+    state: string;
+    media_id?: string;
+    elapsed_secs?: number;
+    duration_secs?: number;
+  }) {
       this.isPlaying = status.state === "Playing";
       this.elapsed = status.elapsed_secs ?? 0;
       // mpv reports no duration until the new file is fully opened. Keeping
@@ -343,19 +553,19 @@ class PlayerStore {
               title?: string;
               artist?: string;
               album?: string;
+              album_override?: string;
               display_title?: string;
               artist_override?: string;
+              cover_url?: string;
             };
           } = await invoke("get_song", { id: newId });
           if (song) {
             this.title = song.metadata?.display_title ?? song.title;
             this.artist = song.metadata?.artist_override ?? song.artist;
-            this.album = song.metadata?.album ?? song.album ?? "";
-            // NOTE: a local media file path must NOT be used as an <img src> —
-            // the webview would request it from the dev server and get a 404.
-            // Only real cover art (a data: URI or an image file) is valid here.
-            // Until cover art is resolved, leave it null so the monogram shows.
-            this.cover = null;
+            this.album = song.metadata?.album_override ?? song.metadata?.album ?? song.album ?? "";
+            // Remote cover URLs come from the source plugin; local files need
+            // embedded-art extraction before they can use a local path here.
+            this.cover = song.metadata?.cover_url ?? null;
           }
         } catch {
           this.title = "Unknown";
@@ -371,9 +581,6 @@ class PlayerStore {
         this.duration = 0;
         this.elapsed = 0;
       }
-    } catch {
-      /* backend not ready yet */
-    }
   }
 }
 

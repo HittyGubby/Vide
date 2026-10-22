@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/transport";
   import { onMount } from "svelte";
   import { X, Plus } from "lucide-svelte";
   import type { Song, Tag } from "$lib/types";
@@ -151,14 +151,21 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
+    if (e.key === "Tab") {
+      if (suggestions.length > 0) {
+        const chosen = suggestions[selectedSuggestion >= 0 ? selectedSuggestion : 0];
+        const namespaceOnly = !chosen.includes(":");
+        input = namespaceOnly ? chosen + ":" : chosen;
+        suggestions = [];
+        selectedSuggestion = -1;
+      }
+      e.preventDefault();
+    } else if (e.key === "Enter") {
       if (selectedSuggestion >= 0 && suggestions[selectedSuggestion]) {
         input = suggestions[selectedSuggestion];
         suggestions = [];
-        addTag(input);
-      } else {
-        addTag(input);
       }
+      addTag(input);
       e.preventDefault();
     } else if (e.key === "Escape") {
       if (suggestions.length > 0) {
@@ -267,7 +274,7 @@
   {/if}
 
   <div class="editor-footer">
-    <span class="hint">Enter 添加 &middot; Esc 关闭</span>
+    <span class="hint">Tab 补全 &middot; Enter 添加 &middot; Esc 关闭</span>
   </div>
 </div>
 

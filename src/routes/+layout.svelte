@@ -1,6 +1,7 @@
 <script lang="ts">
   import "../app.css";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, restoreRemoteSession } from "$lib/transport";
+  import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
   import { LYRICS_WINDOW_LABEL, applyLyricsWindowSettings } from "$lib/desktopLyrics";
@@ -13,19 +14,27 @@
   import { ui } from "$lib/stores/ui.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import { player } from "$lib/stores/player.svelte";
+  import { loadClientState, saveClientState } from "$lib/clientState";
+  import WebShell from "$lib/components/web/WebShell.svelte";
+  import { isTauri } from "$lib/isTauri";
 
   let { children } = $props();
+
+  onMount(() => {
+    void restoreRemoteSession();
+  });
 
   const WINDOW_STATE_KEY = "vide_window_state";
 
   // This layout is shared with the desktop lyrics window, which must not run
   // the main window's restore/poll/shortcut machinery.
-  const isLyricsWindow = getCurrentWindow().label === LYRICS_WINDOW_LABEL;
+  const isLyricsWindow =
+    isTauri && getCurrentWindow().label === LYRICS_WINDOW_LABEL;
 
   // Load settings once (for auto-play resume).
   let settingsLoaded = false;
   $effect(() => {
-    if (isLyricsWindow || settingsLoaded) return;
+    if (!isTauri || isLyricsWindow || settingsLoaded) return;
     settingsStore.load().then(async () => {
       settingsLoaded = true;
       // Always restore the last-played song's identity & position so the UI
@@ -38,13 +47,19 @@
             title: string;
             artist: string;
             album: string;
-            metadata?: { display_title?: string; artist_override?: string };
+            metadata?: {
+              display_title?: string;
+              artist_override?: string;
+              album_override?: string;
+              cover_url?: string;
+            };
           }>("get_song", { id: last.songId });
           if (song) {
             player.mediaId = last.songId;
             player.title = song.metadata?.display_title ?? song.title;
             player.artist = song.metadata?.artist_override ?? song.artist;
-            player.album = song.album ?? "";
+            player.album = song.metadata?.album_override ?? song.album ?? "";
+            player.cover = song.metadata?.cover_url ?? null;
             player.elapsed = last.position;
             // Remember the resume position so pressing play seeks there.
             player._pendingSeek = last.position;
@@ -75,8 +90,51 @@
   // ── Shortcuts ──────────────────────────────────────
   // In-app bindings fire while the window has focus. Global ones are registered
   // with the OS by the backend, which reports them back as "shortcut" events.
+  //
+  // A global binding can also be pressed while this window is focused. If the
+  // OS registration was refused (another app owns the key) or the display
+  // server does not deliver the event, the keydown still reaches the webview.
+  // Keep a short fallback for that case; a real global event cancels it, so a
+  // working global shortcut never fires twice.
+  const GLOBAL_FALLBACK_MS = 300;
+  const GLOBAL_EVENT_GRACE_MS = 800;
+  const DEDUPE_MS = 150;
+  const nowMs = () =>
+    typeof performance !== "undefined" ? performance.now() : Date.now();
+  const pendingGlobalFallbacks = new Map<
+    ShortcutAction,
+    ReturnType<typeof setTimeout>
+  >();
+  const lastGlobalEventAt = new Map<ShortcutAction, number>();
+  const lastFallbackAt = new Map<ShortcutAction, number>();
+
+  function clearGlobalFallback(action: ShortcutAction) {
+    const timer = pendingGlobalFallbacks.get(action);
+    if (timer) {
+      clearTimeout(timer);
+      pendingGlobalFallbacks.delete(action);
+    }
+  }
+
+  function runAction(action: ShortcutAction) {
+    void runShortcutAction(action);
+  }
+
+  function scheduleGlobalFallback(action: ShortcutAction) {
+    clearGlobalFallback(action);
+    const timer = setTimeout(() => {
+      pendingGlobalFallbacks.delete(action);
+      const eventAt = lastGlobalEventAt.get(action);
+      // The OS already delivered the event; do not run the action twice.
+      if (eventAt !== undefined && nowMs() - eventAt < GLOBAL_EVENT_GRACE_MS) return;
+      lastFallbackAt.set(action, nowMs());
+      runAction(action);
+    }, GLOBAL_FALLBACK_MS);
+    pendingGlobalFallbacks.set(action, timer);
+  }
+
   $effect(() => {
-    if (isLyricsWindow) return;
+    if (!isTauri || isLyricsWindow) return;
     const bindings = settingsStore.settings.shortcuts;
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -92,28 +150,46 @@
       ) {
         return;
       }
-      for (const action of Object.keys(bindings) as ShortcutAction[]) {
+      const actions = Object.keys(bindings) as ShortcutAction[];
+      // In-app bindings take priority and run synchronously.
+      for (const action of actions) {
         const accelerator = bindings[action]?.in_app;
         if (accelerator && eventMatchesAccelerator(e, accelerator)) {
           e.preventDefault();
-          void runShortcutAction(action);
+          runAction(action);
+          return;
+        }
+      }
+      // Global bindings pressed while focused: let the backend event win, and
+      // only fall back if it never arrives.
+      for (const action of actions) {
+        const accelerator = bindings[action]?.global;
+        if (accelerator && eventMatchesAccelerator(e, accelerator)) {
+          e.preventDefault();
+          if (e.repeat) return;
+          scheduleGlobalFallback(action);
           return;
         }
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      for (const timer of pendingGlobalFallbacks.values()) clearTimeout(timer);
+      pendingGlobalFallbacks.clear();
+    };
   });
 
   // Push the global bindings to the backend whenever they change.
   $effect(() => {
-    if (isLyricsWindow) return;
+    if (!isTauri || isLyricsWindow) return;
     const bindings = settingsStore.settings.shortcuts;
     const items = (Object.keys(bindings) as ShortcutAction[])
       .map((action) => ({ action, accelerator: bindings[action]?.global ?? "" }))
       .filter((i) => i.accelerator.trim().length > 0);
     void invoke<string[]>("set_global_shortcuts", { items })
       .then((failures) => {
+        settingsStore.globalShortcutFailures = failures ?? [];
         if (failures?.length) console.warn("global shortcuts not registered:", failures);
       })
       .catch((e) => console.error("set_global_shortcuts error:", e));
@@ -121,9 +197,16 @@
 
   // Global shortcuts arrive as events so both runtimes share one code path.
   $effect(() => {
-    if (isLyricsWindow) return;
+    if (!isTauri || isLyricsWindow) return;
     const unlisten = listen<string>("shortcut", (event) => {
-      void runShortcutAction(event.payload as ShortcutAction);
+      const action = event.payload as ShortcutAction;
+      lastGlobalEventAt.set(action, nowMs());
+      clearGlobalFallback(action);
+      // If the in-app fallback already ran this action, the OS event is the
+      // same physical press — ignore the duplicate.
+      const fallbackAt = lastFallbackAt.get(action);
+      if (fallbackAt !== undefined && nowMs() - fallbackAt < DEDUPE_MS) return;
+      runAction(action);
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -133,7 +216,7 @@
   // Keep the desktop lyrics window in step with its settings (visibility,
   // always-on-top, lock) — only the main window owns that window.
   $effect(() => {
-    if (isLyricsWindow) return;
+    if (!isTauri || isLyricsWindow) return;
     const s = settingsStore.settings;
     void applyLyricsWindowSettings({
       desktop_lyrics_enabled: s.desktop_lyrics_enabled,
@@ -145,7 +228,7 @@
   // Reactively apply font + window scale so setting changes take effect
   // immediately (no restart needed).
   $effect(() => {
-    if (isLyricsWindow) return;
+    if (!isTauri || isLyricsWindow) return;
     const font = settingsStore.settings.font_family;
     if (font) document.body.style.fontFamily = font;
     const scale = (settingsStore.settings.window_scale || 100) / 100;
@@ -187,7 +270,7 @@
         y: Math.round(pos.y / factor),
         maximized,
       };
-      localStorage.setItem(WINDOW_STATE_KEY, JSON.stringify(state));
+      await saveClientState("window.main", state);
     } catch {
       /* ignore */
     }
@@ -202,25 +285,35 @@
   }
 
   $effect(() => {
-    if (isLyricsWindow) return;
+    if (!isTauri || isLyricsWindow) return;
     const appWindow = getCurrentWindow();
     let cancelled = false;
 
     void (async () => {
       try {
-        const saved = localStorage.getItem(WINDOW_STATE_KEY);
-        if (saved) {
-          const state = JSON.parse(saved) as Partial<WindowState>;
-          // Size and position first: they are what the window falls back to
-          // as soon as the user restores it from maximized.
-          if (state.width && state.height) {
-            await appWindow.setSize(new LogicalSize(state.width, state.height));
+        // SQLite is the source of truth; localStorage is only a one-time
+        // migration source for layouts saved by older builds.
+        let state = await loadClientState<Partial<WindowState>>("window.main");
+        if (!state) {
+          const legacy = localStorage.getItem(WINDOW_STATE_KEY);
+          if (legacy) {
+            state = JSON.parse(legacy) as Partial<WindowState>;
+            await saveClientState("window.main", state);
+            localStorage.removeItem(WINDOW_STATE_KEY);
           }
-          if (typeof state.x === "number" && typeof state.y === "number") {
-            await appWindow.setPosition(new LogicalPosition(state.x, state.y));
-          }
-          if (state.maximized) await appWindow.maximize();
         }
+        if (state) localStorage.removeItem(WINDOW_STATE_KEY);
+        if (!state || cancelled) return;
+
+        // Size and position first: they are what the window falls back to as
+        // soon as the user restores it from maximized.
+        if (state.width && state.height) {
+          await appWindow.setSize(new LogicalSize(state.width, state.height));
+        }
+        if (typeof state.x === "number" && typeof state.y === "number") {
+          await appWindow.setPosition(new LogicalPosition(state.x, state.y));
+        }
+        if (state.maximized) await appWindow.maximize();
       } catch {
         /* ignore corrupt state */
       }
@@ -253,7 +346,9 @@
 <!-- The desktop lyrics window shares this layout (SvelteKit always nests the
      root layout), so it renders the page bare — no sidebar, title bar or
      player bar — and skips every main-window-only effect. -->
-{#if isLyricsWindow}
+{#if !isTauri}
+  <WebShell>{@render children()}</WebShell>
+{:else if isLyricsWindow}
   {@render children()}
 {:else}
   <div class="app-shell">

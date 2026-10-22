@@ -23,6 +23,7 @@
     "core:window:allow-unmaximize",
     "core:window:allow-set-decorations",
     "core:window:allow-get-all-windows",
+    "core:window:allow-available-monitors",
     "core:window:allow-set-resizable",
     "core:window:allow-is-visible",
     "core:window:allow-set-ignore-cursor-events",

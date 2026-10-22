@@ -1,15 +1,23 @@
 {
+  "protocol": 1,
   "name": "ytdlp-adapter",
   "version": "1.0.0",
+  "description": "yt-dlp provider",
   "exec": ["python3", "adapter.py"],
   "capabilities": [
     { "type": "search", "platform": "youtube" },
     { "type": "search", "platform": "bilibili" },
-    { "type": "metadata", "platform": "youtube" },
-    { "type": "metadata", "platform": "bilibili" },
+    { "type": "resolve", "platform": "youtube" },
+    { "type": "resolve", "platform": "bilibili" },
     { "type": "stream", "platform": "youtube" },
     { "type": "stream", "platform": "bilibili" },
     { "type": "playlist", "platform": "youtube" },
-    { "type": "playlist", "platform": "bilibili" }
+    { "type": "playlist", "platform": "bilibili" },
+    { "type": "lyrics", "platform": "youtube" },
+    { "type": "lyrics", "platform": "bilibili" },
+    { "type": "search", "platform": "soundcloud" },
+    { "type": "resolve", "platform": "soundcloud" },
+    { "type": "stream", "platform": "soundcloud" },
+    { "type": "playlist", "platform": "soundcloud" }
   ]
 }

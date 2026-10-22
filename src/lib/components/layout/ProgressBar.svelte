@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/transport";
   import { player } from "$lib/stores/player.svelte";
 
   let elapsedFormatted = $derived(formatTime(player.elapsed));

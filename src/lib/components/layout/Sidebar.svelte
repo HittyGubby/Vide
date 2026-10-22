@@ -2,12 +2,11 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { Search, LibraryBig, Settings } from "lucide-svelte";
-
-  const navItems = [
+  let navItems = $derived([
     { id: "search", icon: Search, label: "搜索", route: "/search" },
     { id: "library", icon: LibraryBig, label: "列表", route: "/" },
     { id: "settings", icon: Settings, label: "设置", route: "/settings" },
-  ];
+  ]);
 
   let currentPath = $derived($page.url.pathname);
 

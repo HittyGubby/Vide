@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/transport";
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -19,8 +19,9 @@
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
   import SeekBar from "$lib/components/player/SeekBar.svelte";
   import type { Song } from "$lib/types";
-
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  import { loadCoverWithFallback } from "$lib/cover";
+  import { isTauri } from "$lib/isTauri";
+  import { canManage } from "$lib/stores/auth.svelte";
 
   // Tag editor for the currently playing song
   let tagSong = $state<Song | null>(null);
@@ -40,9 +41,7 @@
   }
 
   onMount(() => {
-    player.poll();
-    pollTimer = setInterval(() => player.poll(), 1000);
-    return () => clearInterval(pollTimer);
+    player.startStatusUpdates();
   });
 
   async function togglePlay() {
@@ -59,13 +58,7 @@
   }
 
   async function seekTrack(targetSecs: number) {
-    if (player.duration <= 0) return;
-    try {
-      await invoke("seek", { positionSecs: targetSecs });
-      player.elapsed = targetSecs;
-    } catch {
-      /* seek not supported in this mode */
-    }
+    await player.seekTo(targetSecs);
   }
 
   function formatTime(secs: number): string {
@@ -169,7 +162,7 @@
   <div class="player-left" oncontextmenu={locateCurrentSong}>
     <button class="album-art" onclick={openDetail} title="播放详情" aria-label="播放详情">
       {#if player.cover}
-        <img src={player.cover} alt="" class="cover" />
+        <img src={player.cover} alt="" class="cover" onerror={(e) => loadCoverWithFallback(e.currentTarget as HTMLImageElement)} />
       {:else}
         <span class="monogram">V</span>
       {/if}
@@ -199,12 +192,15 @@
 
   <!-- Control buttons (localized) -->
   <div class="player-tools">
-    <button class="ctrl-btn" title="编辑标签" aria-label="编辑标签" onclick={openTagEditor}>
-      <Tag size={15} />
-    </button>
+    {#if canManage()}
+      <button class="ctrl-btn" title="编辑标签" aria-label="编辑标签" onclick={openTagEditor}>
+        <Tag size={15} />
+      </button>
+    {/if}
 
     <VolumeControl />
 
+    {#if isTauri}
     <button
       class="ctrl-btn"
       class:active={settingsStore.settings.desktop_lyrics_enabled}
@@ -214,6 +210,7 @@
     >
       <MessageSquareQuote size={15} />
     </button>
+    {/if}
 
     <PlayModeControl />
   </div>

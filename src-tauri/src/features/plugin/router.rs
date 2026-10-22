@@ -1,79 +1,97 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::features::plugin::types::{PluginManifest, PluginStatus};
+use serde::Serialize;
+
+use crate::features::plugin::config::PluginConfig;
+use crate::features::plugin::types::PluginManifest;
 
 /// A (platform, capability_type) pair used as a routing key.
 pub type RouteKey = (String, String);
 
 /// A single provider entry in the routing table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProviderEntry {
     pub plugin_name: String,
-    #[allow(dead_code)]
-    pub exec: Vec<String>,
-    #[allow(dead_code)]
-    pub status: PluginStatus,
 }
 
-/// Runtime routing table: maps (platform, capability) → list of providers.
-///
-/// The first provider in the vec is the active (currently selected) one.
-/// Remaining entries are fallbacks in order.
-/// Uses interior mutability (Mutex) so that all methods take &self.
+/// Serializable snapshot of one route, used by the settings UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteProviders {
+    pub platform: String,
+    pub capability: String,
+    pub providers: Vec<String>,
+}
+
+/// Runtime routing table: maps (platform, capability) to an ordered provider
+/// list. The first provider is the active one; the rest are fallbacks.
 #[derive(Debug)]
 pub struct RoutingTable {
     routes: Mutex<HashMap<RouteKey, Vec<ProviderEntry>>>,
 }
 
-/// User-defined provider overrides, stored in SQLite settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProviderConfig {
-    /// Maps "platform.capability" → plugin_name
-    pub overrides: HashMap<String, String>,
-    /// Per-plugin concurrency limits
-    pub concurrency: HashMap<String, u32>,
-}
-
 impl RoutingTable {
-    /// Build a routing table from loaded manifests and optional user config.
-    pub fn build(manifests: &[PluginManifest], config: &ProviderConfig) -> Self {
-        let mut providers: HashMap<RouteKey, Vec<ProviderEntry>> = HashMap::new();
+    /// Build routes from manifests, then apply the user's complete ordered
+    /// overrides. Routes without an override keep the manifest-discovered
+    /// order.
+    pub fn build(manifests: &[PluginManifest], config: &PluginConfig) -> Self {
+        let mut routes: HashMap<RouteKey, Vec<ProviderEntry>> = HashMap::new();
 
-        for m in manifests {
-            for cap in &m.capabilities {
-                let key = (cap.platform.clone(), cap.capability.clone());
-                let entry = ProviderEntry {
-                    plugin_name: m.name.clone(),
-                    exec: m.exec.clone(),
-                    status: PluginStatus::Idle,
-                };
-                providers.entry(key).or_default().push(entry);
-            }
-        }
-
-        // Apply user overrides (reorder to put chosen provider first)
-        for (override_key, chosen_plugin) in &config.overrides {
-            let parts: Vec<&str> = override_key.splitn(2, '.').collect();
-            if parts.len() != 2 {
-                continue;
-            }
-            let key = (parts[0].to_string(), parts[1].to_string());
-            if let Some(entries) = providers.get_mut(&key) {
-                if let Some(pos) = entries.iter().position(|e| e.plugin_name == *chosen_plugin) {
-                    let chosen = entries.remove(pos);
-                    entries.insert(0, chosen);
+        for manifest in manifests {
+            for capability in &manifest.capabilities {
+                if !capability.capability.is_supported() {
+                    continue;
+                }
+                let key = (
+                    capability.platform.clone(),
+                    capability.capability.as_str().to_string(),
+                );
+                let entries = routes.entry(key).or_default();
+                if !entries
+                    .iter()
+                    .any(|entry| entry.plugin_name == manifest.name)
+                {
+                    entries.push(ProviderEntry {
+                        plugin_name: manifest.name.clone(),
+                    });
                 }
             }
         }
 
+        for (platform, capabilities) in &config.routes {
+            for (capability, provider_names) in capabilities {
+                let key = (platform.clone(), capability.clone());
+                let mut entries: Vec<ProviderEntry> = Vec::new();
+                for name in provider_names {
+                    let exists = manifests.iter().any(|manifest| {
+                        manifest.name == *name
+                            && manifest.capabilities.iter().any(|cap| {
+                                cap.capability.is_supported()
+                                    && cap.platform == *platform
+                                    && cap.capability.as_str() == capability
+                            })
+                    });
+                    if !exists {
+                        continue;
+                    }
+                    if !entries
+                        .iter()
+                        .any(|entry| entry.plugin_name == *name)
+                    {
+                        entries.push(ProviderEntry {
+                            plugin_name: name.clone(),
+                        });
+                    }
+                }
+                routes.insert(key, entries);
+            }
+        }
+
         RoutingTable {
-            routes: Mutex::new(providers),
+            routes: Mutex::new(routes),
         }
     }
 
-    /// Get the active (first) provider for a (platform, capability) pair.
     pub fn get_active(&self, platform: &str, capability: &str) -> Option<ProviderEntry> {
         self.routes
             .lock()
@@ -83,7 +101,7 @@ impl RoutingTable {
             .cloned()
     }
 
-    /// Get all providers for a (platform, capability) pair (active + fallbacks).
+    /// Ordered providers for one route (active + fallbacks).
     pub fn get_all(&self, platform: &str, capability: &str) -> Option<Vec<ProviderEntry>> {
         self.routes
             .lock()
@@ -92,42 +110,6 @@ impl RoutingTable {
             .cloned()
     }
 
-    /// Update the status of a specific provider.
-    pub fn set_status(
-        &self,
-        platform: &str,
-        capability: &str,
-        plugin_name: &str,
-        status: PluginStatus,
-    ) {
-        if let Some(entries) = self
-            .routes
-            .lock()
-            .unwrap()
-            .get_mut(&(platform.to_string(), capability.to_string()))
-        {
-            if let Some(entry) = entries.iter_mut().find(|e| e.plugin_name == plugin_name) {
-                entry.status = status;
-            }
-        }
-    }
-
-    /// Promote the next fallback to active for a route (after failure).
-    /// Returns the new active provider, or None if no route exists.
-    pub fn fallback(&self, platform: &str, capability: &str) -> Option<ProviderEntry> {
-        let key = (platform.to_string(), capability.to_string());
-        let mut routes = self.routes.lock().unwrap();
-        if let Some(entries) = routes.get_mut(&key) {
-            if entries.len() > 1 {
-                let failed = entries.remove(0);
-                entries.push(failed);
-            }
-            return entries.first().cloned();
-        }
-        None
-    }
-
-    /// Check if a route has any provider.
     pub fn has_route(&self, platform: &str, capability: &str) -> bool {
         self.routes
             .lock()
@@ -135,9 +117,8 @@ impl RoutingTable {
             .contains_key(&(platform.to_string(), capability.to_string()))
     }
 
-    /// Find the active provider for *any* platform that supports the given
-    /// capability. Used for platform-agnostic capabilities (e.g. parsing a
-    /// playlist URL) where the caller does not know the platform in advance.
+    /// Find the active provider for any platform that supports the capability.
+    /// Used for platform-agnostic operations such as playlist URL parsing.
     pub fn get_any_capability(&self, capability: &str) -> Option<(String, ProviderEntry)> {
         let routes = self.routes.lock().unwrap();
         for ((platform, cap), entries) in routes.iter() {
@@ -150,24 +131,59 @@ impl RoutingTable {
         None
     }
 
-    /// Number of distinct routes.
+    /// Every provider for a capability across platforms, in route order.
+    /// Playlist URL parsing uses this so an unknown URL falls through to the
+    /// next provider instead of failing on the first one.
+    pub fn get_all_capability(&self, capability: &str) -> Vec<(String, ProviderEntry)> {
+        let routes = self.routes.lock().unwrap();
+        let mut result = Vec::new();
+        let mut keys: Vec<_> = routes.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            if key.1 != capability {
+                continue;
+            }
+            if let Some(entries) = routes.get(&key) {
+                for entry in entries {
+                    result.push((key.0.clone(), entry.clone()));
+                }
+            }
+        }
+        // Platform-agnostic URL parsing has no route key to order by. Try the
+        // Meting adapter before yt-dlp so a Chinese URL does not first wait for
+        // a yt-dlp attempt. The plugin name is a stable, user-visible ordering.
+        result.sort_by(|left, right| {
+            left.1
+                .plugin_name
+                .cmp(&right.1.plugin_name)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        result
+    }
+
     pub fn route_count(&self) -> usize {
         self.routes.lock().unwrap().len()
     }
 
-    /// Serialize the current routing overrides to a ProviderConfig for persistence.
-    pub fn to_config(&self) -> ProviderConfig {
+    /// Stable route snapshot for the plugin settings page.
+    pub fn snapshot(&self) -> Vec<RouteProviders> {
         let routes = self.routes.lock().unwrap();
-        let mut overrides = HashMap::new();
-        for ((platform, capability), entries) in &*routes {
-            if let Some(active) = entries.first() {
-                let key = format!("{}.{}", platform, capability);
-                overrides.insert(key, active.plugin_name.clone());
-            }
-        }
-        ProviderConfig {
-            overrides,
-            ..Default::default()
-        }
+        let mut result: Vec<RouteProviders> = routes
+            .iter()
+            .map(|((platform, capability), entries)| RouteProviders {
+                platform: platform.clone(),
+                capability: capability.clone(),
+                providers: entries
+                    .iter()
+                    .map(|entry| entry.plugin_name.clone())
+                    .collect(),
+            })
+            .collect();
+        result.sort_by(|a, b| {
+            a.platform
+                .cmp(&b.platform)
+                .then_with(|| a.capability.cmp(&b.capability))
+        });
+        result
     }
 }

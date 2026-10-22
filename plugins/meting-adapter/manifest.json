@@ -1,0 +1,29 @@
+{
+  "protocol": 1,
+  "name": "meting-adapter",
+  "version": "1.0.0",
+  "description": "NetEase / Tencent / Kugou / Kuwo via Meting",
+  "exec": ["node", "adapter.mjs"],
+  "capabilities": [
+    { "type": "search", "platform": "netease" },
+    { "type": "resolve", "platform": "netease" },
+    { "type": "stream", "platform": "netease" },
+    { "type": "playlist", "platform": "netease" },
+    { "type": "lyrics", "platform": "netease" },
+    { "type": "search", "platform": "tencent" },
+    { "type": "resolve", "platform": "tencent" },
+    { "type": "stream", "platform": "tencent" },
+    { "type": "playlist", "platform": "tencent" },
+    { "type": "lyrics", "platform": "tencent" },
+    { "type": "search", "platform": "kugou" },
+    { "type": "resolve", "platform": "kugou" },
+    { "type": "stream", "platform": "kugou" },
+    { "type": "playlist", "platform": "kugou" },
+    { "type": "lyrics", "platform": "kugou" },
+    { "type": "search", "platform": "kuwo" },
+    { "type": "resolve", "platform": "kuwo" },
+    { "type": "stream", "platform": "kuwo" },
+    { "type": "playlist", "platform": "kuwo" },
+    { "type": "lyrics", "platform": "kuwo" }
+  ]
+}

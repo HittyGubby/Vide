@@ -31,11 +31,11 @@ export interface SongMetadata {
   path?: string;
   added_time?: string;
   duration?: number;
-  import_order?: number;
-  import_source?: string;
+  cover_url?: string;
   file_name?: string;
   display_title?: string;
   artist_override?: string;
+  album_override?: string;
   lyrics?: string;
   notes?: string;
 }
@@ -50,6 +50,26 @@ export interface Song {
   sources: Source[];
   paths: string[];
   metadata: SongMetadata;
+}
+
+/* ── Song details (hover card) ───────────────────────── */
+export interface SongFileInfo {
+  path: string;
+  exists: boolean;
+  size?: number;
+  /** Unix timestamp (seconds). */
+  modified?: number;
+  format?: string;
+  bitrate?: number;
+  sample_rate?: number;
+  channels?: number;
+  bit_depth?: number;
+  duration?: number;
+}
+
+export interface SongDetails {
+  song: Song;
+  files: SongFileInfo[];
 }
 
 /* ── Playback Status ─────────────────────────────────── */
@@ -68,6 +88,8 @@ export interface ScanResult {
   added: number;
   updated: number;
   skipped: number;
+  pruned_paths: number;
+  pruned_songs: number;
   errors: string[];
 }
 
@@ -100,11 +122,61 @@ export interface SearchPreset {
 /* ── Online Search Result ───────────────────── */
 export interface SearchResultItem {
   platform: string;
-  id: string;
+  source_id: string;
   title: string;
   artist?: string;
   album?: string;
   duration?: number;
+  cover_url?: string;
+  year?: number;
+  track_number?: number;
+  disc_number?: number;
+}
+
+/* ── Plugins ───────────────────────────── */
+export type PluginRunStatus =
+  | "idle"
+  | "running"
+  | { exited: number | null }
+  | { error: string };
+
+export interface PluginCapability {
+  capability: string;
+  platform: string;
+}
+
+export interface PluginInfo {
+  name: string;
+  version: string;
+  description?: string | null;
+  dir: string;
+  enabled: boolean;
+  capabilities: PluginCapability[];
+  default_argv: string[];
+  argv: string[];
+  platform_argv: Record<string, string[]>;
+  route_argv: Record<string, string[]>;
+  concurrency?: number | null;
+  status: PluginRunStatus;
+  last_stderr?: string | null;
+}
+
+export interface RouteProviderInfo {
+  plugin: string;
+  enabled: boolean;
+  argv: string[];
+}
+
+export interface RouteInfo {
+  platform: string;
+  capability: string;
+  providers: RouteProviderInfo[];
+}
+
+export interface PluginState {
+  plugin_dir: string;
+  plugins: PluginInfo[];
+  routes: RouteInfo[];
 }
 
 /* ── Shortcuts ─────────────────────────── */
@@ -157,4 +229,5 @@ export interface AppSettings {
   shortcuts: ShortcutSettings;
   seek_step_secs: number;
   volume_step: number;
+  scan_extensions: string[];
 }

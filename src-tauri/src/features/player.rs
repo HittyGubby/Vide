@@ -1,12 +1,24 @@
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use crate::features::cache::CacheManager;
 use crate::features::plugin::types::StreamDescriptor;
 use crate::infra::db::Database;
 use crate::models::song::SongId;
+
+/// Bound on concurrent background stream downloads. Old streams are never
+/// cancelled on pause/switch; this just prevents a rapid skip burst from
+/// starting an unbounded number of download processes.
+const MAX_CONCURRENT_STREAMS: usize = 3;
+
+fn stream_semaphore() -> &'static Arc<Semaphore> {
+    static LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    LIMIT.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_STREAMS)))
+}
 
 /// Play order mode — all decisions (next/prev/loop/shuffle) live in Rust so
 /// mpv is only ever told what to play, not how to sequence the queue.
@@ -119,8 +131,8 @@ impl PlayerManager {
             StreamDescriptor::UrlStream { id, url, headers } => {
                 self.play_url(id, url, headers.as_ref()).await
             }
-            StreamDescriptor::Pipe { id, exec } => {
-                self.play_pipe(id, &exec.cmd).await
+            StreamDescriptor::Pipe { id, cmd } => {
+                self.play_plugin_pipe(id, cmd).await
             }
         };
 
@@ -157,6 +169,7 @@ impl PlayerManager {
         cmd.arg("--no-video");
         cmd.arg("--audio-display=no");
         cmd.arg("--cache=yes");
+        cmd.arg("--force-seekable=yes");
         cmd.arg("--msg-level=all=error");
         // mpv requires `--input-ipc-server=<path>` as a *single* argv
         // (a space-separated form "option value" is rejected with
@@ -204,42 +217,57 @@ impl PlayerManager {
         Ok(self.status())
     }
 
-    /// Play via a pipe command (no seek support in this mode).
-    async fn play_pipe(&mut self, id: &str, cmd_parts: &[String]) -> Result<PlaybackStatus, String> {
+    /// Play an online pipe by writing it into the cache and letting mpv play
+    /// the growing file. Pausing and switching do not kill the download; old
+    /// streams finish in the background and become normal cache entries.
+    async fn play_plugin_pipe(
+        &mut self,
+        id: &str,
+        cmd_parts: &[String],
+    ) -> Result<PlaybackStatus, String> {
         if cmd_parts.is_empty() {
             return Err("empty pipe command".to_string());
         }
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| "database unavailable".to_string())?;
+        let base = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("vide");
+        let cache = CacheManager::new(db.as_ref().clone(), &base)
+            .await
+            .map_err(|e| format!("cache init: {e}"))?;
+        let song_id = SongId(id.to_string());
 
-        let cmd_str = cmd_parts.join(" ");
-        let shell_cmd = format!("{} | mpv --no-video --audio-display=no --msg-level=all=error -", cmd_str);
-
-        let mut pcmd = tokio::process::Command::new("sh");
-        pcmd.arg("-c")
-            .arg(&shell_cmd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(unix)]
+        // A completed cache copy is preferred over a new stream.
+        if let Some(path) = cache
+            .get_cached(&song_id)
+            .await
+            .map_err(|e| format!("cache lookup: {e}"))?
         {
-            use std::os::unix::process::CommandExt;
-            pcmd.process_group(0);
-        }
-        let child = pcmd.spawn().map_err(|e| format!("failed to spawn pipe+mpv: {e}"))?;
-        #[cfg(unix)]
-        {
-            self.child_pgid = Some(child.id().unwrap_or(0) as i32);
+            return self.play_url(id, &path.to_string_lossy(), None).await;
         }
 
-        self.child = Some(child);
-        self.ipc_sock = None; // pipe mode has no IPC socket
-        self.state = PlaybackState::Playing;
-        self.media_id = Some(id.to_string());
-        self.started_at = Some(Instant::now());
-        self.duration = None;
-        self.elapsed = 0.0;
+        // Limit simultaneous background downloads. If the cap is reached, the
+        // new track waits for an older stream to finish rather than killing it.
+        let permit = stream_semaphore()
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "stream limiter closed".to_string())?;
+        let started = cache
+            .start_pipe_stream(&song_id, cmd_parts, id, Some(permit))
+            .await
+            .map_err(|e| format!("stream start: {e}"))?;
 
-        debug!("playing pipe: {} ({:?})", id, cmd_parts);
-        Ok(self.status())
+        tokio::time::timeout(Duration::from_secs(15), started.ready)
+            .await
+            .map_err(|_| "timed out waiting for stream data".to_string())?
+            .map_err(|_| "stream ended before writing data".to_string())?;
+
+        debug!("playing cached stream: {} ({:?})", id, started.path);
+        self.play_url(id, &started.path.to_string_lossy(), None).await
     }
 
     /// Send a JSON-RPC command to mpv's IPC socket and return the raw response.
@@ -372,7 +400,7 @@ impl PlayerManager {
     /// yet: `time-pos` answers "property unavailable" and a `seek` sent at that
     /// point is rejected outright. Poll `time-pos` until it is answerable, then
     /// retry the seek until mpv accepts it.
-    async fn seek_when_ready(&mut self, position_secs: f64) -> Result<(), String> {
+    pub async fn seek_when_ready(&mut self, position_secs: f64) -> Result<(), String> {
         if self.ipc_sock.is_none() {
             // Pipe mode has no IPC socket at all; seeking is impossible.
             return Err("no IPC socket for this stream".to_string());
@@ -456,7 +484,9 @@ impl PlayerManager {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("song not found: {}", song_id.0))?;
 
-        if let Some(path) = song.paths.first() {
+        // Use the first path that still exists; a stale first entry (moved
+        // file, unmounted drive) must not hide a valid duplicate.
+        if let Some(path) = song.paths.iter().find(|path| path.exists()) {
             Ok(StreamDescriptor::UrlStream {
                 id: song_id.0.clone(),
                 url: path.to_string_lossy().to_string(),
@@ -473,6 +503,62 @@ impl PlayerManager {
         }
     }
 
+    /// Persist the active queue + cursor in the settings table.
+    ///
+    /// The queue is runtime state, but losing it on restart made next/prev
+    /// silently do nothing after the startup auto-resume (play_song started
+    /// the track without registering a queue). Keeping it in SQLite means the
+    /// backend is ready before the frontend restores anything.
+    async fn persist_queue(&self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let value = serde_json::json!({
+            "ids": self.queue,
+            "current_index": self.current_index,
+        });
+        if let Err(e) = db.update_setting("play_queue", &value).await {
+            warn!("failed to persist play queue: {e}");
+        }
+    }
+
+    /// Load the queue persisted by the previous session. Playback is not
+    /// started here; the frontend's last-played restore (or the user) decides
+    /// what to play, and play_song_id syncs the cursor to that song.
+    pub async fn restore_queue(&mut self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let value = match db.get_setting("play_queue").await {
+            Ok(Some(value)) => value,
+            Ok(None) => return,
+            Err(e) => {
+                warn!("failed to load persisted play queue: {e}");
+                return;
+            }
+        };
+        let Some(ids) = value
+            .get("ids")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        else {
+            return;
+        };
+        if ids.is_empty() {
+            return;
+        }
+        let index = value
+            .get("current_index")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1) as isize;
+        self.queue = ids;
+        self.current_index = index.clamp(-1, self.queue.len() as isize - 1);
+        debug!(
+            "restored play queue: {} tracks, index {}",
+            self.queue.len(),
+            self.current_index
+        );
+    }
+
     /// Set the playback queue and start playing `start_id` (or index -1 to just
     /// store the queue). All sequencing (next/prev/loop) is decided here in Rust.
     pub async fn set_queue(
@@ -483,6 +569,7 @@ impl PlayerManager {
         self.queue = ids;
         self.current_index = start_index;
         self.shuffle_played.clear();
+        self.persist_queue().await;
         if start_index >= 0 && start_index < self.queue.len() as isize {
             let id = self.queue[start_index as usize].clone();
             return self.play_song_id(&id, None).await;
@@ -500,6 +587,7 @@ impl PlayerManager {
         let id = self.queue[idx as usize].clone();
         self.current_index = idx;
         self.shuffle_played.insert(id.clone());
+        self.persist_queue().await;
         self.play_song_id(&id, None).await
     }
 
@@ -508,8 +596,24 @@ impl PlayerManager {
     /// ready and seeks there — so a startup resume lands at the saved position
     /// instead of starting from 0.
     pub async fn play_song_id(&mut self, id: &str, position_secs: Option<f64>) -> Result<PlaybackStatus, String> {
+        // Keep the queue cursor in sync when a song is started directly (the
+        // startup resume and the search page call play_song without going
+        // through play_index). Otherwise next/prev would advance from a stale
+        // index — or do nothing when the cursor was still -1.
+        let mut cursor_changed = false;
+        if let Some(idx) = self.queue.iter().position(|queued| queued == id) {
+            if self.current_index != idx as isize {
+                self.current_index = idx as isize;
+                cursor_changed = true;
+            }
+        }
         let descriptor = self.descriptor_for(&SongId(id.to_string())).await?;
         self.play(&descriptor).await?;
+        // Only write when the cursor actually moved. Playing a song that is
+        // outside the current queue must not overwrite the saved queue.
+        if cursor_changed {
+            self.persist_queue().await;
+        }
         if let Some(pos) = position_secs {
             if pos > 0.0 {
                 // A failed resume must not fail the whole play request — warn
@@ -541,10 +645,19 @@ impl PlayerManager {
             }
             return Ok(self.status());
         }
-        self.ipc_command(serde_json::json!(["set_property", "pause", true]))
+        // Snapshot the real playhead before pausing. The UI freezes the
+        // progress bar here; using the last polled value (up to a second old)
+        // made the bar snap backwards when playback resumed.
+        if let Some(t) = self.fetch_time_pos().await {
+            self.elapsed = t;
+        }
+        self.ipc_command_ok(serde_json::json!(["set_property", "pause", true]))
             .await
             .map_err(|e| format!("pause error: {e}"))?;
         self.state = PlaybackState::Paused;
+        if let Some(t) = self.fetch_time_pos().await {
+            self.elapsed = t;
+        }
         Ok(self.status())
     }
 
@@ -553,10 +666,19 @@ impl PlayerManager {
         if self.state != PlaybackState::Paused {
             return Ok(self.status());
         }
-        self.ipc_command(serde_json::json!(["set_property", "pause", false]))
+        // The position is authoritative while paused; report the same value to
+        // the frontend before and after resuming so its interpolated progress
+        // bar does not jump.
+        if let Some(t) = self.fetch_time_pos().await {
+            self.elapsed = t;
+        }
+        self.ipc_command_ok(serde_json::json!(["set_property", "pause", false]))
             .await
             .map_err(|e| format!("resume error: {e}"))?;
         self.state = PlaybackState::Playing;
+        if let Some(t) = self.fetch_time_pos().await {
+            self.elapsed = t;
+        }
         Ok(self.status())
     }
 
@@ -570,11 +692,35 @@ impl PlayerManager {
         }
     }
 
+    /// Last-resort queue for a play session that started without one (e.g.
+    /// the very first launch after this feature, before any queue has been
+    /// persisted). If the current track belongs to the library, build the
+    /// queue from the library so next/prev still do something useful.
+    async fn ensure_queue_for_current(&mut self) -> bool {
+        if !self.queue.is_empty() {
+            return true;
+        }
+        let (Some(db), Some(media_id)) = (&self.db, self.media_id.clone()) else {
+            return false;
+        };
+        let Ok(songs) = db.list_library_songs().await else {
+            return false;
+        };
+        let Some(index) = songs.iter().position(|song| song.id.0 == media_id) else {
+            return false;
+        };
+        self.queue = songs.into_iter().map(|song| song.id.0).collect();
+        self.current_index = index as isize;
+        self.shuffle_played.clear();
+        self.persist_queue().await;
+        true
+    }
+
     /// Advance to the next song in the queue per the play mode. In shuffle
     /// mode picks a random unplayed track; otherwise steps +1 (or -1 in reverse)
     /// and wraps when `loop` is set. Returns the new status.
     pub async fn play_next(&mut self) -> Result<PlaybackStatus, String> {
-        if self.queue.is_empty() {
+        if !self.ensure_queue_for_current().await {
             return Ok(self.status());
         }
         let mode = self.play_mode;
@@ -629,7 +775,7 @@ impl PlayerManager {
 
     /// Play the previous song in the queue.
     pub async fn play_prev(&mut self) -> Result<PlaybackStatus, String> {
-        if self.queue.is_empty() {
+        if !self.ensure_queue_for_current().await {
             return Ok(self.status());
         }
         if self.current_index <= 0 {
@@ -673,6 +819,10 @@ impl PlayerManager {
     }
 
     /// Get the current playback status.
+    pub fn queue_snapshot(&self) -> (Vec<String>, isize) {
+        (self.queue.clone(), self.current_index)
+    }
+
     pub fn status(&self) -> PlaybackStatus {
         PlaybackStatus {
             state: self.state,
@@ -783,5 +933,29 @@ impl Drop for PlayerManager {
         if let Some(sock) = self.ipc_sock.take() {
             let _ = std::fs::remove_file(&sock);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn play_queue_roundtrips_through_settings() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+
+        let mut player = PlayerManager::new(Some(db.clone()), None);
+        player
+            .set_queue(vec!["a".into(), "b".into(), "c".into()], -1)
+            .await
+            .unwrap();
+        // Simulate the user advancing to the second track.
+        player.current_index = 1;
+        player.persist_queue().await;
+
+        let mut restored = PlayerManager::new(Some(db), None);
+        restored.restore_queue().await;
+        assert_eq!(restored.queue, vec!["a", "b", "c"]);
+        assert_eq!(restored.current_index, 1);
     }
 }

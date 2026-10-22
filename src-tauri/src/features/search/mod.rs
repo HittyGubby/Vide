@@ -24,8 +24,17 @@ pub async fn search(db: &Database, query: &str) -> Result<Vec<Song>, String> {
         return Ok(Vec::new());
     }
 
-    // Fetch all tags for building the tag index
-    let all_tags = fetch_all_tags(db).await.map_err(|e| e.to_string())?;
+    // query_songs now attaches tags, so build the tag index from them instead
+    // of issuing a second full scan.
+    let all_tags: Vec<(SongId, Tag)> = songs
+        .iter()
+        .flat_map(|song| {
+            song.tags
+                .iter()
+                .cloned()
+                .map(|tag| (song.id.clone(), tag))
+        })
+        .collect();
     let tag_index = build_tag_index(&all_tags);
 
     // Parse and evaluate
@@ -63,8 +72,9 @@ pub async fn autocomplete(
 
     // Field names
     let fields = [
-        "title", "artist", "album", "source", "path",
-        "added_time", "duration", "import_order", "import_source",
+        "song_metadata", "tags", "id", "title", "artist", "album", "source",
+        "source_id", "path", "file_name", "notes", "lyrics",
+        "added_time", "duration",
     ];
     for f in &fields {
         if f.starts_with(&prefix) {
@@ -90,7 +100,9 @@ pub async fn autocomplete(
             if suggestions.len() >= limit {
                 break;
             }
-            let s = format!("title CONTAINS \"{}\"", song.title);
+            // Keep a title containing quotes/backslashes a valid query string.
+            let escaped = song.title.replace('\\', "\\\\").replace('"', "\\\"");
+            let s = format!("title CONTAINS \"{escaped}\"");
             if !suggestions.contains(&s) {
                 suggestions.push(s);
             }
@@ -99,24 +111,4 @@ pub async fn autocomplete(
 
     suggestions.truncate(limit);
     Ok(suggestions)
-}
-
-/// Fetch all tag entries from the database.
-async fn fetch_all_tags(db: &Database) -> Result<Vec<(SongId, Tag)>, sea_orm::DbErr> {
-    use crate::infra::db::entity::tag;
-    use sea_orm::EntityTrait;
-
-    let rows = tag::Entity::find().all(&db.conn).await?;
-    Ok(rows
-        .into_iter()
-        .map(|t| {
-            (
-                SongId(t.song_id),
-                Tag {
-                    namespace: t.namespace,
-                    value: t.value,
-                },
-            )
-        })
-        .collect())
 }

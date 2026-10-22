@@ -115,6 +115,18 @@ pub struct AppSettings {
     /// Volume units changed by the volume-up / volume-down shortcuts.
     #[serde(default = "default_volume_step")]
     pub volume_step: u32,
+    /// File extensions included by the media scanner (without a dot).
+    #[serde(default = "default_scan_extensions")]
+    pub scan_extensions: Vec<String>,
+}
+
+pub fn default_scan_extensions() -> Vec<String> {
+    [
+        "mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "ape", "aiff", "wv",
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect()
 }
 
 fn default_true() -> bool {
@@ -145,12 +157,12 @@ pub const DEFAULT_DESKTOP_LYRICS_CSS: &str = r#"/* 歌词区域 DOM 结构
   <div class="lyrics-viewport">                可视区：负责裁剪与自动滚动
     <div class="lyrics-lines">                 行容器
       <div class="line">                       一行歌词（可含多种语言）
-        <p class="english">english lyric</p>    语言 class 来自插件 JSON 的键名
-        <p class="chinese">中文歌词</p>
+        <p class="lyric-1">english lyric</p>    同一时间的第 1 行
+        <p class="lyric-2">中文歌词</p>          同一时间的第 2 行
       </div>
       <div class="line playing">               正在播放的歌词行
-        <p class="russian">ruskiy tekst 2</p>
-        <p class="english">english lyric 2</p>
+        <p class="lyric-1">ruskiy tekst 2</p>
+        <p class="lyric-2">english lyric 2</p>
       </div>
     </div>
   </div>
@@ -191,6 +203,10 @@ pub const DEFAULT_DESKTOP_LYRICS_CSS: &str = r#"/* 歌词区域 DOM 结构
   transition: 0.2s;
 }
 
+/* 同一时间的多行：lyric-1、lyric-2、lyric-3… 按出现顺序 */
+.line .lyric-1 { color: rgba(255, 255, 255, 0.8); }
+.line .lyric-2 { color: rgba(255, 220, 180, 0.75); }
+
 .playing p {
   font-size: 16px;
   color: green;
@@ -202,8 +218,13 @@ pub const DEFAULT_DETAIL_LYRICS_CSS: &str = r#"/* 歌词区域 DOM 结构（与�
 <div class="lyrics-root" data-position="center">
   <div class="lyrics-viewport">
     <div class="lyrics-lines">
-      <div class="line"><p class="english">english lyric</p></div>
-      <div class="line playing"><p class="english">english lyric 2</p></div>
+      <div class="line">
+        <p class="lyric-1">english lyric</p>
+        <p class="lyric-2">中文歌词</p>
+      </div>
+      <div class="line playing">
+        <p class="lyric-1">english lyric 2</p>
+      </div>
     </div>
   </div>
 </div>
@@ -242,6 +263,10 @@ pub const DEFAULT_DETAIL_LYRICS_CSS: &str = r#"/* 歌词区域 DOM 结构（与�
   transition: 0.2s;
 }
 
+/* 同一时间的多行：lyric-1、lyric-2、lyric-3… 按出现顺序 */
+.line .lyric-1 { color: var(--color-base-content) / 0.85; }
+.line .lyric-2 { color: var(--color-base-content) / 0.6; }
+
 .playing p {
   font-size: 16px;
   color: var(--color-base-content);
@@ -274,6 +299,7 @@ impl Default for AppSettings {
             shortcuts: ShortcutSettings::default(),
             seek_step_secs: default_seek_step_secs(),
             volume_step: default_volume_step(),
+            scan_extensions: default_scan_extensions(),
         }
     }
 }

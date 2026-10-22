@@ -1,10 +1,15 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/transport";
   import { onMount } from "svelte";
   import { Settings as SettingsIcon, Scan, Download, Upload, FolderPlus, Edit, X, Check } from "lucide-svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
+  import { isRemoteMode } from "$lib/transport";
+  import { isTauri } from "$lib/isTauri";
+  import { canManage } from "$lib/stores/auth.svelte";
   import ShortcutCell from "$lib/components/settings/ShortcutCell.svelte";
   import MonacoCssEditor from "$lib/components/settings/MonacoCssEditor.svelte";
+  import PluginSettings from "$lib/components/settings/PluginSettings.svelte";
+  import RemoteConnection from "$lib/components/settings/RemoteConnection.svelte";
   import { SHORTCUT_ACTIONS } from "$lib/shortcuts";
   import type { AppSettings, CacheStat, ShortcutAction } from "$lib/types";
 
@@ -17,16 +22,43 @@
   let editingInclude = $state<string | null>(null);
   let editingExclude = $state<string | null>(null);
   let scanning = $state(false);
-  let scanResult = $state<{ scanned: number; added: number; skipped: number; errors: string[] } | null>(null);
+  let scanResult = $state<{
+    scanned: number;
+    added: number;
+    updated: number;
+    skipped: number;
+    pruned_paths: number;
+    pruned_songs: number;
+    errors: string[];
+  } | null>(null);
   let exporting = $state(false);
   let exportDone = $state(false);
   let importMessage = $state<string | null>(null);
   let cacheStats = $state<CacheStat[]>([]);
   let cacheBusy = $state<string | null>(null);
   let cacheNote = $state<string | null>(null);
+  let cacheLoaded = $state(false);
+
+  let scanFormatsText = $state("");
+
+  async function saveScanFormats() {
+    const values = [...new Set(
+      scanFormatsText
+        .split(/[\s,]+/)
+        .map((value) => value.trim().replace(/^\./, "").toLowerCase())
+        .filter(Boolean),
+    )];
+    if (values.length === 0) {
+      scanFormatsText = settingsStore.settings.scan_extensions.join(" ");
+      return;
+    }
+    scanFormatsText = values.join(" ");
+    await settingsStore.update("scan_extensions", values);
+  }
 
   onMount(async () => {
     await settingsStore.load();
+    scanFormatsText = (settingsStore.settings.scan_extensions ?? []).join(" ");
     try {
       roots = await invoke("get_library_roots");
       excludeRoots = await invoke("get_exclude_roots");
@@ -41,8 +73,10 @@
   async function loadCacheStats() {
     try {
       cacheStats = await invoke<CacheStat[]>("get_cache_stats");
+      cacheLoaded = true;
     } catch (e) {
       console.error("load cache stats error:", e);
+      cacheNote = "缓存统计加载失败";
     }
   }
 
@@ -296,6 +330,11 @@
     <h1>设置</h1>
   </div>
 
+  {#if isTauri}
+    <RemoteConnection />
+  {/if}
+
+  {#if isTauri}
   <!-- 通用 -->
   <section class="group">
     <h2 class="group-title">通用</h2>
@@ -315,59 +354,72 @@
     </div>
   </section>
 
+  {/if}
+
   <!-- 外观 -->
   <section class="group">
     <h2 class="group-title">外观</h2>
     <div class="setting-card">
-      <div class="row input-row">
-        <span class="row-label">窗口缩放</span>
-        <input
-          type="number"
-          min="50"
-          max="200"
-          step="5"
-          value={settingsStore.settings.window_scale}
-          onchange={(e) => setNumber("window_scale", (e.currentTarget as HTMLInputElement).value)}
-          class="num-input"
-        />
-      </div>
-      <div class="row input-row">
-        <span class="row-label">主题色</span>
-        <div class="color-row">
-          <input
-            type="color"
-            value={settingsStore.settings.theme_primary}
-            oninput={(e) => setText("theme_primary", (e.currentTarget as HTMLInputElement).value)}
-            class="color-input"
-          />
-          <input
-            type="text"
-            value={settingsStore.settings.theme_primary}
-            onchange={(e) => setText("theme_primary", (e.currentTarget as HTMLInputElement).value)}
-            placeholder="#5f5dfd"
-            class="text-input color-text"
-          />
-          <button
-            class="clear-btn"
-            onclick={() => setText("theme_primary", "#5f5dfd")}
-          >
-            重置
-          </button>
-        </div>
-      </div>
-      <div class="row input-row">
-        <span class="row-label">字体</span>
-        <input
-          type="text"
-          value={settingsStore.settings.font_family}
-          onchange={(e) => setText("font_family", (e.currentTarget as HTMLInputElement).value)}
-          placeholder="Segoe UI, sans-serif"
-          class="text-input"
-        />
-      </div>
+      <table class="table table-sm settings-table">
+        <tbody>
+          <tr>
+            <th class="setting-label" scope="row">窗口缩放</th>
+            <td class="setting-control">
+              <input
+                type="number"
+                min="50"
+                max="200"
+                step="5"
+                value={settingsStore.settings.window_scale}
+                onchange={(e) => setNumber("window_scale", (e.currentTarget as HTMLInputElement).value)}
+                class="num-input"
+              />
+            </td>
+          </tr>
+          <tr>
+            <th class="setting-label" scope="row">主题色</th>
+            <td class="setting-control">
+              <div class="color-row">
+                <input
+                  type="color"
+                  value={settingsStore.settings.theme_primary}
+                  oninput={(e) => setText("theme_primary", (e.currentTarget as HTMLInputElement).value)}
+                  class="color-input"
+                />
+                <input
+                  type="text"
+                  value={settingsStore.settings.theme_primary}
+                  onchange={(e) => setText("theme_primary", (e.currentTarget as HTMLInputElement).value)}
+                  placeholder="#5f5dfd"
+                  class="text-input color-text"
+                />
+                <button
+                  class="clear-btn"
+                  onclick={() => setText("theme_primary", "#5f5dfd")}
+                >
+                  重置
+                </button>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <th class="setting-label" scope="row">字体</th>
+            <td class="setting-control">
+              <input
+                type="text"
+                value={settingsStore.settings.font_family}
+                onchange={(e) => setText("font_family", (e.currentTarget as HTMLInputElement).value)}
+                placeholder="Segoe UI, sans-serif"
+                class="text-input"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
+  {#if isTauri}
   <!-- 快捷键 -->
   <section class="group">
     <h2 class="group-title">快捷键</h2>
@@ -403,33 +455,49 @@
       <p class="sc-hint">
         点击单元格后按下新的组合键即可修改；Backspace 清除，Esc 取消。全局快捷键在应用未获得焦点时同样生效。
       </p>
-      <div class="row input-row">
-        <span class="row-label">快进/快退时长（秒）</span>
-        <input
-          type="number"
-          min="1"
-          max="120"
-          step="1"
-          value={settingsStore.settings.seek_step_secs}
-          onchange={(e) => setFloat("seek_step_secs", (e.currentTarget as HTMLInputElement).value)}
-          class="num-input"
-        />
-      </div>
-      <div class="row input-row">
-        <span class="row-label">音量调节步长</span>
-        <input
-          type="number"
-          min="1"
-          max="50"
-          step="1"
-          value={settingsStore.settings.volume_step}
-          onchange={(e) => setNumber("volume_step", (e.currentTarget as HTMLInputElement).value)}
-          class="num-input"
-        />
-      </div>
+      {#if settingsStore.globalShortcutFailures.length > 0}
+        <p class="sc-warning">
+          系统未接受以下全局快捷键（可能已被其他程序占用）：
+          {settingsStore.globalShortcutFailures.join("；")}
+        </p>
+      {/if}
+      <table class="table table-sm settings-table">
+        <tbody>
+          <tr>
+            <th class="setting-label" scope="row">快进/快退时长（秒）</th>
+            <td class="setting-control">
+              <input
+                type="number"
+                min="1"
+                max="120"
+                step="1"
+                value={settingsStore.settings.seek_step_secs}
+                onchange={(e) => setFloat("seek_step_secs", (e.currentTarget as HTMLInputElement).value)}
+                class="num-input"
+              />
+            </td>
+          </tr>
+          <tr>
+            <th class="setting-label" scope="row">音量调节步长</th>
+            <td class="setting-control">
+              <input
+                type="number"
+                min="1"
+                max="50"
+                step="1"
+                value={settingsStore.settings.volume_step}
+                onchange={(e) => setNumber("volume_step", (e.currentTarget as HTMLInputElement).value)}
+                class="num-input"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
+  {/if}
 
+  {#if canManage()}
   <!-- 缓存管理 -->
   <section class="group">
     <h2 class="group-title">缓存管理</h2>
@@ -437,7 +505,7 @@
       <table class="cache-table">
         <thead>
           <tr>
-            <th>缓存项</th>
+            <th class="cache-name">缓存项</th>
             <th class="cache-amount">数量（大小）</th>
             <th class="cache-action">操作</th>
           </tr>
@@ -445,7 +513,7 @@
         <tbody>
           {#each cacheStats as stat}
             <tr>
-              <td>{stat.label}</td>
+              <td class="cache-name">{stat.label}</td>
               <td class="cache-amount">
                 {stat.count}{stat.size != null ? "（" + formatBytes(stat.size) + "）" : ""}
               </td>
@@ -460,7 +528,7 @@
               </td>
             </tr>
           {:else}
-            <tr><td class="cache-empty" colspan="3">加载中…</td></tr>
+            <tr><td class="cache-empty" colspan="3">{cacheLoaded ? "暂无缓存" : "加载中…"}</td></tr>
           {/each}
         </tbody>
       </table>
@@ -469,7 +537,9 @@
       {/if}
     </div>
   </section>
+  {/if}
 
+  {#if isTauri}
   <!-- 桌面歌词 -->
   <section class="group">
     <h2 class="group-title">桌面歌词</h2>
@@ -501,25 +571,33 @@
       <p class="sc-hint">
         锁定后窗口不再响应拖拽与缩放，并且所有输入事件都会透穿到下层的窗口。
       </p>
-      <div class="row radio-row">
-        <span class="row-label">正在播放的歌词行位置</span>
-        <div class="radio-group">
-          {#each positionOptions as opt}
-            <label class="radio-opt">
-              <input
-                type="radio"
-                name="desktop_lyrics_position"
-                value={opt.id}
-                checked={settingsStore.settings.desktop_lyrics_position === opt.id}
-                onchange={() => setText("desktop_lyrics_position", opt.id)}
-              />
-              <span>{opt.label}</span>
-            </label>
-          {/each}
-        </div>
-      </div>
+      <table class="table table-sm settings-table">
+        <tbody>
+          <tr>
+            <th class="setting-label" scope="row">正在播放的歌词行位置</th>
+            <td class="setting-control">
+              <div class="radio-group">
+                {#each positionOptions as opt}
+                  <label class="radio-opt">
+                    <input
+                      type="radio"
+                      name="desktop_lyrics_position"
+                      value={opt.id}
+                      checked={settingsStore.settings.desktop_lyrics_position === opt.id}
+                      onchange={() => setText("desktop_lyrics_position", opt.id)}
+                    />
+                    <span>{opt.label}</span>
+                  </label>
+                {/each}
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
+
+  {/if}
 
   <!-- 歌词样式 -->
   <section class="group">
@@ -528,12 +606,14 @@
       <p class="sc-hint">
         两段 CSS 分别作用于悬浮歌词窗口和播放详情页面的歌词区域，保存后立即生效。自动滚动由上面的“歌词行位置”控制，其余外观完全交给这里的样式。
       </p>
-      <p class="editor-label">悬浮歌词样式</p>
-      <MonacoCssEditor
-        value={settingsStore.settings.desktop_lyrics_css}
-        onchange={(next) => setText("desktop_lyrics_css", next)}
-        heightPx={300}
-      />
+      {#if isTauri}
+        <p class="editor-label">悬浮歌词样式</p>
+        <MonacoCssEditor
+          value={settingsStore.settings.desktop_lyrics_css}
+          onchange={(next) => setText("desktop_lyrics_css", next)}
+          heightPx={300}
+        />
+      {/if}
       <p class="editor-label">播放详情歌词样式</p>
       <MonacoCssEditor
         value={settingsStore.settings.detail_lyrics_css}
@@ -543,6 +623,7 @@
     </div>
   </section>
 
+  {#if canManage()}
   <!-- 库管理 -->
   <section class="group">
     <h2 class="group-title">库管理
@@ -627,10 +708,44 @@
       </div>
     </div>
 
+    {#if isTauri && !isRemoteMode()}
+    <!-- Scan format filter -->
+    <div class="setting-card">
+      <div class="row">
+        <span class="row-label">扫描格式</span>
+        <span class="sc-hint">空格分隔，可写 .mp3 或 mp3；MIME 只用于 HTTP 输出，不用来扫描。</span>
+      </div>
+      <input
+        class="format-input"
+        type="text"
+        spellcheck="false"
+        placeholder="mp3 flac ogg wav m4a"
+        bind:value={scanFormatsText}
+        onblur={saveScanFormats}
+        onkeydown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+      />
+      <p class="sc-hint">
+        扩展名过滤零成本且稳定；真正的容器/编码判断交给解码器或元数据解析。
+      </p>
+    </div>
+    {/if}
+
     {#if scanResult}
-      <div class="scan-result">扫描完成: {scanResult.scanned} 个文件, 新增 {scanResult.added} 首, 跳过 {scanResult.skipped} 首{#if scanResult.errors.length > 0} · {scanResult.errors.length} 个错误{/if}</div>
+      <div class="scan-result">
+        扫描完成: {scanResult.scanned} 个文件, 新增 {scanResult.added} 首,
+        更新 {scanResult.updated} 首, 跳过 {scanResult.skipped} 首
+        {#if scanResult.pruned_paths > 0 || scanResult.pruned_songs > 0}
+          · 清理 {scanResult.pruned_paths} 个失效路径、{scanResult.pruned_songs} 首空歌曲
+        {/if}
+        {#if scanResult.errors.length > 0} · {scanResult.errors.length} 个错误{/if}
+      </div>
     {/if}
   </section>
+
+  {#if canManage()}
+    <PluginSettings />
+  {/if}
+  {/if}
 
   <!-- 数据 -->
   <section class="group">
@@ -639,17 +754,21 @@
         <button class="btn-secondary" onclick={exportAllSongs} disabled={exporting}>
           <Download size={13} /><span>{exporting ? "导出中..." : "导出歌曲"}</span>
         </button>
-        <label class="btn-secondary">
-          <Upload size={13} /><span>导入歌曲</span>
-          <input type="file" accept=".json" class="hidden-file" onchange={(e) => importJson(e, "songs")} />
-        </label>
+        {#if canManage()}
+          <label class="btn-secondary">
+            <Upload size={13} /><span>导入歌曲</span>
+            <input type="file" accept=".json" class="hidden-file" onchange={(e) => importJson(e, "songs")} />
+          </label>
+        {/if}
         <button class="btn-secondary" onclick={exportSettings}>
           <Download size={13} /><span>导出设置</span>
         </button>
-        <label class="btn-secondary">
-          <Upload size={13} /><span>导入设置</span>
-          <input type="file" accept=".json" class="hidden-file" onchange={(e) => importJson(e, "settings")} />
-        </label>
+        {#if canManage()}
+          <label class="btn-secondary">
+            <Upload size={13} /><span>导入设置</span>
+            <input type="file" accept=".json" class="hidden-file" onchange={(e) => importJson(e, "settings")} />
+          </label>
+        {/if}
       </div>
       {#if importMessage}
         <div class="import-message">{importMessage}</div>
@@ -706,6 +825,25 @@
 
   .row-label { font-size: 13px; color: var(--color-base-content); }
 
+  /* Label + control grid. daisyUI's .table gives the rows a consistent
+     baseline and separators; every control column is the same width, and the
+     controls inside it stretch to fill that column. */
+  .settings-table {
+    table-layout: fixed;
+    font-size: 13px;
+  }
+  .settings-table th,
+  .settings-table td { padding-block: 8px; }
+  .settings-table .setting-label {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--color-base-content);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .settings-table .setting-control { width: 240px; }
+  .settings-table .radio-group { justify-content: center; }
+
   .shortcut-table {
     width: 100%;
     border-collapse: collapse;
@@ -739,8 +877,20 @@
     line-height: 1.6;
     padding: 6px 0 2px;
   }
+  .sc-warning {
+    font-size: 11px;
+    color: var(--color-warning);
+    line-height: 1.6;
+    padding: 2px 0 6px;
+  }
 
-  .color-row { display: flex; align-items: center; gap: 8px; }
+  .color-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+  }
   .color-input {
     width: 40px;
     height: 26px;
@@ -750,14 +900,29 @@
     background: none;
     cursor: pointer;
   }
-  .color-text { width: 110px; }
+  /* Just wide enough for a 7-character "#rrggbb" value plus its padding.
+     The compound selector beats .text-input, whose 100% would otherwise win
+     on source order. */
+  .text-input.color-text {
+    width: calc(7ch + 14px);
+    padding: 0 6px;
+    text-align: center;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
 
   .editor-label {
     color: var(--color-base-content) / 0.7;
     padding: 8px 2px 2px;
   }
 
-  .cache-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  /* Same alignment recipe as .shortcut-table: a plain collapsed table, a
+     content-sized first column, and two equal 34% value columns whose text is
+     centred. This is the look that already works in the shortcut section. */
+  .cache-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
   .cache-table th {
     text-align: left;
     font-size: 11px;
@@ -766,16 +931,22 @@
     padding: 8px 6px;
     border-bottom: 1px solid var(--panel-border);
   }
-  .cache-table th.cache-amount { text-align: right; }
-  .cache-table th.cache-action { text-align: right; }
+  .cache-table th.cache-amount,
+  .cache-table th.cache-action { text-align: center; }
   .cache-table td {
     padding: 6px;
     border-bottom: 1px solid var(--panel-border);
     vertical-align: middle;
   }
   .cache-table tr:last-child td { border-bottom: none; }
-  .cache-amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .cache-action { text-align: right; width: 90px; }
+  .cache-name { text-align: left; white-space: nowrap; }
+  .cache-amount {
+    width: 34%;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .cache-action { width: 34%; text-align: center; }
   .cache-empty { text-align: center; color: var(--color-base-content) / 0.5; }
 
   .clear-btn {
@@ -801,14 +972,14 @@
   .radio-opt input { accent-color: var(--color-primary); }
 
   .num-input {
-    width: 90px; height: 30px; padding: 0 10px; border-radius: 6px;
+    width: 100%; height: 30px; padding: 0 10px; border-radius: 6px;
     background: var(--color-base-100); border: 1px solid var(--panel-border);
-    color: var(--color-base-content); font-size: 13px; text-align: right; user-select: text;
+    color: var(--color-base-content); font-size: 13px; text-align: center; user-select: text;
   }
   .text-input {
-    width: 280px; height: 30px; padding: 0 10px; border-radius: 6px;
+    width: 100%; height: 30px; padding: 0 10px; border-radius: 6px;
     background: var(--color-base-100); border: 1px solid var(--panel-border);
-    color: var(--color-base-content); font-size: 13px; user-select: text;
+    color: var(--color-base-content); font-size: 13px; text-align: center; user-select: text;
   }
   .num-input:focus, .text-input:focus { border-color: var(--color-primary); }
 
@@ -844,6 +1015,20 @@
   }
   .btn-add:disabled { opacity: 0.5; }
 
+  .format-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 9px;
+    border: 1px solid var(--color-base-300);
+    border-radius: 5px;
+    background: var(--color-base-100);
+    color: var(--color-base-content);
+    font: 12px var(--font-mono, monospace);
+  }
+  .format-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+  }
   .root-list { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
   .root-empty { font-size: 12px; color: var(--color-base-content) / 0.5; }
   .root-item {

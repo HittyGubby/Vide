@@ -15,8 +15,6 @@ pub struct Source {
 }
 
 /// SongMetadata combines built-in searchable attributes (§4.1) and user overrides (§4.2).
-/// Import-specific fields (import_order, import_source) are optional and only present
-/// on imported tracks.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SongMetadata {
     // Built-in attributes (searchable)
@@ -27,15 +25,14 @@ pub struct SongMetadata {
     pub path: Option<String>,
     pub added_time: Option<String>,
     pub duration: Option<f64>,
-
-    // Import-only attributes
-    pub import_order: Option<u32>,
-    pub import_source: Option<String>,
+    /// Remote cover URL (usually from the source platform).
+    pub cover_url: Option<String>,
 
     // User overrides
     pub file_name: Option<String>,
     pub display_title: Option<String>,
     pub artist_override: Option<String>,
+    pub album_override: Option<String>,
 
     // Extended metadata
     pub lyrics: Option<String>,
