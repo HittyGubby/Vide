@@ -612,6 +612,10 @@ impl PlayerManager {
                 self.current_index = idx as isize;
                 cursor_changed = true;
             }
+        } else if self.current_index >= 0 {
+            // A song started directly may not belong to the persisted queue.
+            // Do not leave a stale cursor behind for repeat-one/shuffle.
+            self.current_index = -1;
         }
         let descriptor = self.descriptor_for(&SongId(id.to_string())).await?;
         self.play(&descriptor).await?;
@@ -731,13 +735,22 @@ impl PlayerManager {
         }
         let mode = self.play_mode;
 
-        // Repeat-one: replay the current track.
+        // Repeat-one: replay the current track, even when it was started
+        // outside the persisted queue.
         if mode.single {
-            let id = if self.current_index >= 0 {
-                self.queue[self.current_index as usize].clone()
-            } else {
-                self.queue[0].clone()
-            };
+            let id = self
+                .media_id
+                .clone()
+                .or_else(|| {
+                    (self.current_index >= 0)
+                        .then(|| self.queue.get(self.current_index as usize).cloned())
+                        .flatten()
+                })
+                .or_else(|| self.queue.first().cloned())
+                .unwrap_or_default();
+            if id.is_empty() {
+                return Ok(self.status());
+            }
             return self.play_song_id(&id, None).await;
         }
 
@@ -877,11 +890,15 @@ impl PlayerManager {
                     // In repeat-one mode restart the current track; otherwise
                     // advance the queue (looping is handled inside play_next).
                     if self.play_mode.single {
-                        let id = if self.current_index >= 0 {
-                            self.queue[self.current_index as usize].clone()
-                        } else {
-                            self.media_id.clone().unwrap_or_default()
-                        };
+                        let id = self
+                            .media_id
+                            .clone()
+                            .or_else(|| {
+                                (self.current_index >= 0)
+                                    .then(|| self.queue.get(self.current_index as usize).cloned())
+                                    .flatten()
+                            })
+                            .unwrap_or_default();
                         if !id.is_empty() {
                             let _ = self.play_song_id(&id, None).await;
                         }
