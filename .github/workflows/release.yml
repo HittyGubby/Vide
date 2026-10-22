@@ -9,55 +9,88 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  prepare:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --draft \
+            --title "Vide ${GITHUB_REF_NAME}" \
+            --notes "Vide ${GITHUB_REF_NAME}" \
+            2>/dev/null || true
 
+  server:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev
-
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
       - name: Build frontend
         run: bun run build
-
       - name: Build server
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --bin vide-server
-
       - name: Package server
         run: |
           mkdir -p dist/vide-server
           cp src-tauri/target/release/vide-server dist/vide-server/
           cp -r build dist/vide-server/web
           tar -czf "vide-server-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" -C dist vide-server
-
-      - name: Upload server artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: vide-server-linux-x86_64
           path: vide-server-*.tar.gz
 
-      - name: Build and release Tauri client
+  tauri:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: --bundles deb,rpm,appimage
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libfuse2 \
+            rpm
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build frontend
+        run: bun run build
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,18 +98,35 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Vide ${{ github.ref_name }}"
           releaseBody: |
-            Vide release ${{ github.ref_name }}
+            Vide ${{ github.ref_name }}
+
+            Linux: deb / rpm / AppImage
+            Windows: MSI / NSIS
+            macOS: dmg / app
+
+            Server bundle is attached after all platform builds finish.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  publish:
+    needs: [server, tauri]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Vide ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: |
+            dist/**/*.tar.gz
+          body: |
+            Vide ${{ github.ref_name }}
 
             - Linux server bundle: vide-server-*-linux-x86_64.tar.gz
-            - Tauri desktop installers (deb / AppImage)
-            - Web assets included in the server bundle
-          releaseDraft: false
-          prerelease: false
-          args: --bundles deb,appimage
-
-      - name: Upload server bundle to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${GITHUB_REF_NAME}" "vide-server-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" --clobber
+            - Tauri desktop installers for Linux (deb/rpm/AppImage), Windows (MSI/NSIS), macOS (dmg/app)
