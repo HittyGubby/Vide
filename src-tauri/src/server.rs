@@ -1006,7 +1006,11 @@ async fn play_online_results(
     headers: HeaderMap,
     Json(request): Json<PlayOnlineRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_csrf(&state, &headers)?;
+    // Search result playback is part of the public search experience when
+    // media is public. Private servers still require a session.
+    if !state.public_media {
+        require_csrf(&state, &headers)?;
+    }
     let mut ids = Vec::with_capacity(request.results.len());
     for item in &request.results {
         let song = ensure_online_song(&state, &item.platform, &item.source_id).await?;
