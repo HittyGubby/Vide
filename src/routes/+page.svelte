@@ -22,6 +22,12 @@
   import { isTauri } from "$lib/isTauri";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import { downloadManyWeb } from "$lib/download";
+  import {
+    defaultColumnPrefs,
+    normalizeColumnPrefs,
+    visibleColumns,
+    type TableColumnDef,
+  } from "$lib/table/columns";
   import { canManage } from "$lib/stores/auth.svelte";
   import { libraryQuery } from "$lib/stores/libraryQuery.svelte";
   import { loadClientState, saveClientState } from "$lib/clientState";
@@ -72,41 +78,20 @@
     return COLUMN_DEFS.find((d) => d.id === id)!;
   }
 
+  const SHARED_COLUMN_DEFS: TableColumnDef[] = COLUMN_DEFS.map((def) => ({
+    id: def.id,
+    label: def.label,
+    defWidth: def.defWidth,
+    min: def.min,
+    fixed: def.fixed != null,
+  }));
+
   function defaultPrefs(): ColumnPrefs {
-    return {
-      sizing: Object.fromEntries(COLUMN_DEFS.map((d) => [d.id, d.defWidth])),
-      order: COLUMN_DEFS.map((d) => d.id),
-      visibility: Object.fromEntries(COLUMN_DEFS.map((d) => [d.id, true])),
-    };
+    return defaultColumnPrefs(SHARED_COLUMN_DEFS) as ColumnPrefs;
   }
 
-  /** Validate stored column prefs and fill in any missing columns. */
   function normalizePrefs(data: unknown): ColumnPrefs {
-    const dflt = defaultPrefs();
-    if (!data || typeof data !== "object" || Array.isArray(data)) return dflt;
-    const raw = data as Record<string, unknown>;
-
-    const sizing: ColumnSizingState = { ...dflt.sizing };
-    const rawSizing = (raw.sizing ?? {}) as Record<string, unknown>;
-    for (const d of COLUMN_DEFS) {
-      const w = Number(rawSizing[d.id]);
-      if (Number.isFinite(w) && w > 0) sizing[d.id] = Math.max(w, d.min);
-    }
-
-    const order: ColumnOrderState = Array.isArray(raw.order)
-      ? raw.order.filter((id): id is string => COLUMN_DEFS.some((d) => d.id === id))
-      : [];
-    for (const d of COLUMN_DEFS) if (!order.includes(d.id)) order.push(d.id);
-
-    const visibility: ColumnVisibilityState = { ...dflt.visibility };
-    const rawVis = (raw.visibility ?? {}) as Record<string, unknown>;
-    for (const d of COLUMN_DEFS) {
-      if (typeof rawVis[d.id] === "boolean") visibility[d.id] = rawVis[d.id] as boolean;
-    }
-    // Keep at least one column on screen.
-    if (!COLUMN_DEFS.some((d) => visibility[d.id] !== false)) visibility.name = true;
-
-    return { sizing, order, visibility };
+    return normalizeColumnPrefs(SHARED_COLUMN_DEFS, data) as ColumnPrefs;
   }
 
   let prefs = $state<ColumnPrefs>(defaultPrefs());
@@ -166,7 +151,7 @@
 
   /** Ids of the currently visible columns, in display order. */
   function visibleIds(): string[] {
-    return prefs.order.filter((id) => prefs.visibility[id] !== false);
+    return visibleColumns(SHARED_COLUMN_DEFS, prefs).map((def) => def.id);
   }
 
   /** The visible, resizable column after `id` — the one that gives up width. */
