@@ -579,6 +579,12 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
       return remoteRequest<T>("POST", "/api/v1/cache/clear", {
         kind: args.kind,
       });
+    case "clear_song_cache":
+      return remoteRequest<T>(
+        "POST",
+        "/api/v1/cache/song/" + encodeURIComponent(arg<string>(args, "id")),
+        {},
+      );
     case "fetch_remote_image": {
       const base = remote?.baseUrl ?? "";
       const url = String(args.url ?? "");

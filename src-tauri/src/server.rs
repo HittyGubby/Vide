@@ -1128,6 +1128,33 @@ struct CacheClearRequest {
     kind: String,
 }
 
+async fn clear_song_cache(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let song_id = SongId(id);
+    let entries = state
+        .app
+        .db
+        .get_cache_entries(&song_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(entry) = entries.first() {
+        let _ = tokio::fs::remove_file(&entry.path).await;
+        let _ = tokio::fs::remove_file(entry.path.with_extension("tmp")).await;
+    }
+    state
+        .app
+        .db
+        .delete_cache_entry(&song_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    audit(&state, "cache_clear_song", &song_id.0);
+    Ok(Json(json!({ "removed": entries.len() })))
+}
+
 async fn clear_cache(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -1570,6 +1597,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/library/scan", post(scan_library))
         .route("/api/v1/cache/stats", get(cache_stats))
         .route("/api/v1/cache/clear", post(clear_cache))
+        .route("/api/v1/cache/song/:id", post(clear_song_cache))
         .route("/api/v1/import/songs", post(import_songs))
         .route("/api/v1/songs/:id/tags", get(song_tags))
         .route("/api/v1/songs/:id/metadata", post(update_metadata))
