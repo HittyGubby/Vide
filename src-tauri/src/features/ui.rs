@@ -329,6 +329,51 @@ pub async fn download_remote_to(
 /// Download a song to a user-visible folder without converting the online
 /// song into a local library entry. The cache copy remains what playback uses.
 #[tauri::command]
+pub async fn download_song_to_path(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<String, String> {
+    let destination = std::path::PathBuf::from(&path);
+    let directory = destination
+        .parent()
+        .ok_or_else(|| "invalid destination path".to_string())?
+        .to_path_buf();
+    let produced = download_song_to(state, id, Some(directory.to_string_lossy().to_string())).await?;
+    let produced_path = std::path::PathBuf::from(&produced);
+    if produced_path != destination {
+        let _ = tokio::fs::remove_file(&destination).await;
+        tokio::fs::rename(&produced_path, &destination)
+            .await
+            .map_err(|e| format!("move download: {e}"))?;
+    }
+    Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn download_remote_to_path(
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    path: String,
+) -> Result<String, String> {
+    let destination = std::path::PathBuf::from(&path);
+    let directory = destination
+        .parent()
+        .ok_or_else(|| "invalid destination path".to_string())?
+        .to_path_buf();
+    let produced =
+        download_remote_to(url, headers, Some(directory.to_string_lossy().to_string())).await?;
+    let produced_path = std::path::PathBuf::from(&produced);
+    if produced_path != destination {
+        let _ = tokio::fs::remove_file(&destination).await;
+        tokio::fs::rename(&produced_path, &destination)
+            .await
+            .map_err(|e| format!("move download: {e}"))?;
+    }
+    Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 pub async fn download_song_to(
     state: tauri::State<'_, AppState>,
     id: String,

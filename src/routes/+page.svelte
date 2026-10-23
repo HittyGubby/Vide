@@ -20,6 +20,7 @@
   import { player } from "$lib/stores/player.svelte";
   import { downloadTarget as remoteDownloadTarget, isRemoteMode } from "$lib/transport";
   import { isTauri } from "$lib/isTauri";
+  import { save, open } from "@tauri-apps/plugin-dialog";
   import { canManage } from "$lib/stores/auth.svelte";
   import { libraryQuery } from "$lib/stores/libraryQuery.svelte";
   import { loadClientState, saveClientState } from "$lib/clientState";
@@ -27,6 +28,8 @@
   import ContextMenu from "$lib/components/song/ContextMenu.svelte";
   import SongHoverCard from "$lib/components/song/SongHoverCard.svelte";
   import MetadataEditor from "$lib/components/song/MetadataEditor.svelte";
+  import MultiMetadataEditor from "$lib/components/song/MultiMetadataEditor.svelte";
+  import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
   import type { Song, SongDetails, Tag } from "$lib/types";
   import type { MenuItem } from "$lib/components/song/ContextMenu.svelte";
 
@@ -579,7 +582,7 @@
   }
 
   function platformTag(song: Song): { label: string; kind: "local" | "online" } | null {
-    if (song.paths.length > 0) return { label: "local", kind: "local" };
+    if (song.paths.length > 0 || song.local) return { label: "local", kind: "local" };
     const src = song.sources[0];
     if (src) return { label: src.platform, kind: "online" };
     return null;
@@ -841,6 +844,13 @@
     }
   }
 
+  function suggestDownloadName(song: Song): string {
+    const base = [displayArtist(song), displayTitle(song)].filter(Boolean).join(" - ") || "audio";
+    const existing = song.paths[0] ?? song.metadata.file_name ?? "";
+    const ext = existing.includes(".") ? existing.split(".").pop()! : "mp3";
+    return base.replace(/[\\/:*?"<>|]/g, "_") + "." + (ext === "media" ? "mp3" : ext);
+  }
+
   async function downloadSong(song: Song) {
     try {
       if (!isTauri) {
@@ -853,19 +863,22 @@
         showSongNote("已开始下载");
         return;
       }
+      const suggested = suggestDownloadName(song);
+      const destination = await save({ defaultPath: suggested });
+      if (!destination) return;
       if (isRemoteMode()) {
         const target = remoteDownloadTarget(song.id);
         if (!target) throw new Error("download endpoint unavailable");
-        const path = await invoke<string>("download_remote_to", {
+        const path = await invoke<string>("download_remote_to_path", {
           url: target.url,
           headers: target.headers,
-          destDir: null,
+          path: destination,
         });
         showSongNote("已保存到 " + path);
       } else {
-        const path = await invoke<string>("download_song_to", {
+        const path = await invoke<string>("download_song_to_path", {
           id: song.id,
-          destDir: null,
+          path: destination,
         });
         showSongNote("已保存到 " + path);
       }
@@ -878,6 +891,105 @@
   // ── Context menu ──────────────────────────────────
   let ctxSong = $state<Song | null>(null);
   let ctxPos = $state<{ x: number; y: number } | null>(null);
+  let selectedIds = $state<Set<string>>(new Set());
+  let selectionAnchor = $state<number | null>(null);
+  let bulkMetaSongs = $state<Song[] | null>(null);
+  let bulkTagSongs = $state<Song[] | null>(null);
+
+  function selectedSongs(): Song[] {
+    return sortedSongs.filter((song) => selectedIds.has(song.id));
+  }
+
+  function clearSelection() {
+    selectedIds = new Set();
+    selectionAnchor = null;
+  }
+
+  function selectRange(index: number) {
+    const anchor = selectionAnchor ?? index;
+    const start = Math.min(anchor, index);
+    const end = Math.max(anchor, index);
+    const next = new Set(selectedIds);
+    for (let i = start; i <= end; i += 1) next.add(sortedSongs[i].id);
+    selectedIds = next;
+    selectionAnchor = index;
+  }
+
+  function onRowClick(song: Song, index: number, e: MouseEvent) {
+    if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedIds);
+      if (next.has(song.id)) next.delete(song.id);
+      else next.add(song.id);
+      selectedIds = next;
+      selectionAnchor = index;
+      return;
+    }
+    if (e.shiftKey) {
+      selectRange(index);
+      return;
+    }
+    if (selectedIds.size > 0) clearSelection();
+    clearHover();
+    void playSong(song);
+  }
+
+  function onRowContext(song: Song, index: number, e: MouseEvent) {
+    if (!selectedIds.has(song.id)) {
+      selectedIds = new Set([song.id]);
+      selectionAnchor = index;
+    }
+    openContextMenu(song, e);
+  }
+
+  async function bulkDownload() {
+    const songs = selectedSongs();
+    if (songs.length === 0) return;
+    if (isTauri) {
+      const directory = await open({ directory: true, multiple: false });
+      if (!directory || Array.isArray(directory)) return;
+      for (const song of songs) {
+        const destination = directory + "/" + suggestDownloadName(song);
+        if (isRemoteMode()) {
+          const target = remoteDownloadTarget(song.id);
+          if (!target) continue;
+          await invoke("download_remote_to_path", {
+            url: target.url,
+            headers: target.headers,
+            path: destination,
+          });
+        } else {
+          await invoke("download_song_to_path", { id: song.id, path: destination });
+        }
+      }
+      showSongNote("已下载 " + songs.length + " 首");
+    } else {
+      for (const song of songs) await downloadSong(song);
+    }
+    clearSelection();
+  }
+
+  async function bulkClearCache() {
+    const songs = selectedSongs();
+    for (const song of songs) {
+      try {
+        await invoke("clear_song_cache", { id: song.id });
+      } catch {
+        /* remote per-song cache clearing is not available */
+      }
+    }
+    showSongNote("已清空所选缓存");
+    clearSelection();
+  }
+
+  function openBulkMetadata() {
+    bulkMetaSongs = selectedSongs();
+    closeContextMenu();
+  }
+
+  function openBulkTags() {
+    bulkTagSongs = selectedSongs();
+    closeContextMenu();
+  }
 
   // ── Hover details ─────────────────────────────────
   let hoverDetails = $state<SongDetails | null>(null);
@@ -965,6 +1077,16 @@
 
   let contextMenuItems = $derived.by(() => {
     if (!ctxSong) return [];
+    if (selectedIds.size > 1 && selectedIds.has(ctxSong.id)) {
+      return [
+        { label: "下载 " + selectedIds.size + " 首", icon: Download, action: () => void bulkDownload() },
+        { label: "编辑标签", icon: ListPlus, action: openBulkTags },
+        { label: "编辑信息", icon: Pencil, action: openBulkMetadata },
+        { label: "清空缓存", icon: Trash2, action: () => void bulkClearCache() },
+        { label: "", action: () => {}, icon: undefined, divider: true },
+        { label: "取消多选", icon: Info, action: clearSelection },
+      ] as MenuItem[];
+    }
     const song = ctxSong;
     const isLocal = song.paths.length > 0;
     const remote = isRemoteMode() || !isTauri;
@@ -1141,18 +1263,29 @@
             class:is-playing={isPlaying(song)}
             class:located={locatorTarget === song.id}
             data-song-id={song.id}
-            onclick={() => {
-              clearHover();
-              void playSong(song);
-            }}
+            onclick={(e) => onRowClick(song, i, e)}
             onmouseenter={(e) => scheduleHover(song, e)}
             onmouseleave={scheduleHideHover}
-            oncontextmenu={(e) => openContextMenu(song, e)}
+            oncontextmenu={(e) => onRowContext(song, i, e)}
           >
             {#each headers as header (header.id)}
               <div class="td" style={colStyle(header)}>
                 {#if header.column.id === "num"}
-                  {#if isPlaying(song)}
+                  {#if selectedIds.size > 0}
+                    <input
+                      type="checkbox"
+                      class="row-check"
+                      checked={selectedIds.has(song.id)}
+                      onclick={(e) => e.stopPropagation()}
+                      onchange={(e) => {
+                        const next = new Set(selectedIds);
+                        if (e.currentTarget.checked) next.add(song.id);
+                        else next.delete(song.id);
+                        selectedIds = next;
+                        selectionAnchor = i;
+                      }}
+                    />
+                  {:else if isPlaying(song)}
                     <span class="playing-indicator">&#9654;</span>
                   {:else}
                     <span class="cell-num">{i + 1}</span>
@@ -1208,6 +1341,38 @@
     song={editingMetaSong}
     onclose={() => (editingMetaSong = null)}
     onsaved={applySavedMetadata}
+  />
+{/if}
+
+{#if bulkMetaSongs}
+  <MultiMetadataEditor
+    songs={bulkMetaSongs}
+    onclose={() => {
+      bulkMetaSongs = null;
+      clearSelection();
+    }}
+    onsaved={(updated) => {
+      const byId = new Map(updated.map((song) => [song.id, song]));
+      songs = songs.map((song) => byId.get(song.id) ?? song);
+      bulkMetaSongs = null;
+      clearSelection();
+    }}
+  />
+{/if}
+
+{#if bulkTagSongs}
+  <MultiTagEditor
+    songs={bulkTagSongs}
+    onclose={() => {
+      bulkTagSongs = null;
+      clearSelection();
+    }}
+    onsaved={(updated) => {
+      const byId = new Map(updated.map((song) => [song.id, song]));
+      songs = songs.map((song) => byId.get(song.id) ?? song);
+      bulkTagSongs = null;
+      clearSelection();
+    }}
   />
 {/if}
 
@@ -1353,6 +1518,7 @@
 
   .cell-num { color: var(--color-base-content) / 0.5; font-size: 12px; }
   .playing-indicator { color: var(--color-primary); font-size: 10px; }
+  .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
 
   .name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
   .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

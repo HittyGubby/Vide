@@ -50,6 +50,8 @@ export interface Song {
   sources: Source[];
   paths: string[];
   metadata: SongMetadata;
+  /** Public server responses include this because local paths are stripped. */
+  local?: boolean;
 }
 
 /* ── Song details (hover card) ───────────────────────── */

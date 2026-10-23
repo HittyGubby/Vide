@@ -47,6 +47,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(app_state)
         .setup(|app| {
@@ -171,7 +172,9 @@ pub fn run() {
             features::plugin::commands::set_plugin_route,
             features::ui::download_song,
             features::ui::download_remote_to,
+            features::ui::download_remote_to_path,
             features::ui::download_song_to,
+            features::ui::download_song_to_path,
             features::ui::get_default_download_dir,
             // Config
             features::ui::get_library_roots,

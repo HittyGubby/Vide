@@ -31,6 +31,7 @@
     "core:event:default",
     "core:tray:default",
     "global-shortcut:default",
-    "opener:default"
+    "opener:default",
+    "dialog:default"
   ]
 }

@@ -882,10 +882,18 @@ impl PlayerManager {
         }
         if let Some(ref mut child) = self.child {
             match child.try_wait() {
-                Ok(Some(_status)) => {
-                    debug!("mpv process exited (natural end)");
+                Ok(Some(status)) => {
+                    let clean_exit = status.success();
+                    debug!("mpv process exited (success={clean_exit})");
+                    self.child = None;
                     self.state = PlaybackState::Ended;
                     self.started_at = None;
+                    if !clean_exit {
+                        // Loading/decoder/network failures also terminate mpv.
+                        // Do not treat them as a natural end and skip tracks.
+                        warn!("mpv exited with {status}; leaving track in Ended state");
+                        return;
+                    }
                     // The media ended naturally: Rust decides what plays next.
                     // In repeat-one mode restart the current track; otherwise
                     // advance the queue (looping is handled inside play_next).

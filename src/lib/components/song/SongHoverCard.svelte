@@ -112,9 +112,12 @@
     </div>
   {/if}
 
-  {#if song.sources.length > 0}
+  {#if song.paths.length > 0 || song.local || song.sources.length > 0}
     <div class="section">
       <div class="section-title">来源</div>
+      {#if song.paths.length > 0 || song.local}
+        <div class="kv"><span>平台</span><b>local</b></div>
+      {/if}
       {#each song.sources as source}
         <div class="kv"><span>平台</span><b>{source.platform}:{source.id}</b></div>
       {/each}

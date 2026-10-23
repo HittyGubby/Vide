@@ -21,6 +21,7 @@
     "@lezer/highlight": "^1.2.5",
     "@tanstack/svelte-table": "^9.2.3",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
     "@tauri-apps/plugin-global-shortcut": "^2.3.2",
     "@tauri-apps/plugin-opener": "^2",
     "daisyui": "^5.7.22",

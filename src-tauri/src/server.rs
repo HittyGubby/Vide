@@ -336,12 +336,17 @@ async fn me(State(state): State<ServerState>, headers: HeaderMap) -> Json<Value>
     }
 }
 
-fn public_song(mut song: crate::models::Song) -> crate::models::Song {
+fn public_song(mut song: crate::models::Song) -> Value {
     // The read-only API needs a song id, metadata and sources; local absolute
     // paths are private and are never sent to clients.
+    let local = !song.paths.is_empty();
     song.paths.clear();
     song.metadata.path = None;
-    song
+    let mut value = serde_json::to_value(song).unwrap_or_default();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("local".to_string(), Value::Bool(local));
+    }
+    value
 }
 
 async fn list_songs(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
@@ -410,6 +415,44 @@ async fn ensure_media_path(
         .download_from_descriptor(&song.id, &descriptor)
         .await
         .ok()
+}
+
+#[derive(Deserialize)]
+struct ImageQuery {
+    url: String,
+    referer: Option<String>,
+}
+
+async fn image_proxy(Query(query): Query<ImageQuery>) -> Result<Response, StatusCode> {
+    if !query.url.starts_with("http://") && !query.url.starts_with("https://") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let client = reqwest::Client::new();
+    let mut request = client
+        .get(&query.url)
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
+    if let Some(referer) = query.referer {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    let response = request.send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    if !response.status().is_success() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_string();
+    if !content_type.starts_with("image/") {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let bytes = response.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .body(Body::from(bytes))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn download_song(
@@ -556,10 +599,26 @@ async fn set_play_mode(
 }
 
 async fn player_status(State(state): State<ServerState>) -> Json<Value> {
-    let mut player = state.app.player.lock().await;
-    player.check_alive().await;
-    player.refresh().await;
-    Json(serde_json::to_value(player.status()).unwrap_or_default())
+    let mut status = {
+        let mut player = state.app.player.lock().await;
+        player.check_alive().await;
+        player.refresh().await;
+        player.status()
+    };
+    if status.media_id.is_none() {
+        if let Ok(Some((song_id, position))) = state.app.db.load_last_played().await {
+            if !song_id.is_empty() {
+                status.media_id = Some(song_id.clone());
+                status.elapsed_secs = Some(position);
+                if let Ok(Some(song)) = state.app.db.get_song(&SongId(song_id)).await {
+                    if let Some(duration) = song.metadata.duration {
+                        status.duration_secs = Some(duration);
+                    }
+                }
+            }
+        }
+    }
+    Json(serde_json::to_value(status).unwrap_or_default())
 }
 
 async fn player_stream(
@@ -1524,6 +1583,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/player/play-online", post(play_online_results))
         .route("/api/v1/media/:id", get(media))
         .route("/api/v1/download/:id", get(download_song))
+        .route("/api/v1/image", get(image_proxy))
         .route("/api/v1/player/status", get(player_status))
         .route("/api/v1/player/mode", post(set_play_mode))
         .route("/api/v1/player/stream", get(player_stream))

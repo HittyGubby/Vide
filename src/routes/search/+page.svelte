@@ -9,17 +9,109 @@
   import { searchPage } from "$lib/stores/searchPage.svelte";
   import ContextMenu, { type MenuItem } from "$lib/components/song/ContextMenu.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
+  import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
+  import { isTauri } from "$lib/isTauri";
+  import { downloadTarget as remoteDownloadTarget, isRemoteMode } from "$lib/transport";
+  import { open, save } from "@tauri-apps/plugin-dialog";
   import type { PlaybackStatus, PluginState, SearchResultItem, Song } from "$lib/types";
 
   let pluginState = $state<PluginState | null>(null);
   let editingSong = $state<Song | null>(null);
   let playingKey = $state<string | null>(null);
   let actionError = $state<string | null>(null);
-  let downloadTarget = $state<Song | null>(null);
-  let downloadDir = $state("");
-  let downloadBusy = $state(false);
-  let downloadResult = $state<string | null>(null);
   let menu = $state<{ x: number; y: number; item: SearchResultItem } | null>(null);
+  let selectedKeys = $state<Set<string>>(new Set());
+  let selectionAnchor = $state<number | null>(null);
+  let bulkTagSongs = $state<Song[] | null>(null);
+
+  function keyOf(item: SearchResultItem) {
+    return item.platform + ":" + item.source_id;
+  }
+  function selectedItems(): SearchResultItem[] {
+    return searchPage.results.filter((item) => selectedKeys.has(keyOf(item)));
+  }
+  function clearSearchSelection() {
+    selectedKeys = new Set();
+    selectionAnchor = null;
+  }
+  function onSearchRowClick(item: SearchResultItem, index: number, e: MouseEvent) {
+    if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedKeys);
+      if (next.has(keyOf(item))) next.delete(keyOf(item));
+      else next.add(keyOf(item));
+      selectedKeys = next;
+      selectionAnchor = index;
+      return;
+    }
+    if (e.shiftKey) {
+      const anchor = selectionAnchor ?? index;
+      const start = Math.min(anchor, index);
+      const end = Math.max(anchor, index);
+      const next = new Set(selectedKeys);
+      for (let i = start; i <= end; i += 1) {
+        const entry = searchPage.results[i];
+        if (entry) next.add(keyOf(entry));
+      }
+      selectedKeys = next;
+      selectionAnchor = index;
+      return;
+    }
+    if (selectedKeys.size > 0) clearSearchSelection();
+    void playResult(item);
+  }
+  function onSearchRowContext(item: SearchResultItem, index: number, e: MouseEvent) {
+    if (!selectedKeys.has(keyOf(item))) {
+      selectedKeys = new Set([keyOf(item)]);
+      selectionAnchor = index;
+    }
+    openMenu(e, item);
+  }
+  async function resolveSelected(): Promise<Song[]> {
+    const songs: Song[] = [];
+    for (const item of selectedItems()) {
+      try {
+        songs.push(await invoke<Song>("resolve_song", { platform: item.platform, sourceId: item.source_id }));
+      } catch {
+        /* skip unresolvable */
+      }
+    }
+    return songs;
+  }
+  async function bulkSearchTag() {
+    const songs = await resolveSelected();
+    menu = null;
+    if (songs.length > 0) bulkTagSongs = songs;
+  }
+  async function bulkSearchDownload() {
+    const songs = await resolveSelected();
+    menu = null;
+    if (songs.length === 0) return;
+    if (!isTauri) {
+      for (const song of songs) {
+        const target = remoteDownloadTarget(song.id);
+        if (!target) continue;
+        const link = document.createElement("a");
+        link.href = target.url;
+        link.download = "";
+        link.click();
+      }
+      clearSearchSelection();
+      return;
+    }
+    const directory = await open({ directory: true, multiple: false });
+    if (!directory || Array.isArray(directory)) return;
+    for (const song of songs) {
+      const destination = directory + "/" + song.title.replace(/[\\/:*?"<>|]/g, "_") + ".mp3";
+      if (isRemoteMode()) {
+        const target = remoteDownloadTarget(song.id);
+        if (!target) continue;
+        await invoke("download_remote_to_path", { url: target.url, headers: target.headers, path: destination });
+      } else {
+        await invoke("download_song_to_path", { id: song.id, path: destination });
+      }
+    }
+    clearSearchSelection();
+  }
 
   const platformLabels: Record<string, string> = {
     netease: "网易云",
@@ -186,38 +278,27 @@
         platform: item.platform,
         sourceId: item.source_id,
       });
-      downloadTarget = song;
-      downloadResult = null;
-      downloadDir = "";
-      try {
-        downloadDir = await invoke<string>("get_default_download_dir");
-      } catch {
-        downloadDir = "";
+      if (!isTauri) {
+        const target = remoteDownloadTarget(song.id);
+        if (!target) throw new Error("download endpoint unavailable");
+        const link = document.createElement("a");
+        link.href = target.url;
+        link.download = "";
+        link.click();
+        return;
+      }
+      const suggested = song.title.replace(/[\\/:*?"<>|]/g, "_") + ".mp3";
+      const path = await save({ defaultPath: suggested });
+      if (!path) return;
+      if (isRemoteMode()) {
+        const target = remoteDownloadTarget(song.id);
+        if (!target) throw new Error("download endpoint unavailable");
+        await invoke("download_remote_to_path", { url: target.url, headers: target.headers, path });
+      } else {
+        await invoke("download_song_to_path", { id: song.id, path });
       }
     } catch (e) {
-      actionError = "读取歌曲信息失败：" + String(e);
-    }
-  }
-
-  function closeDownload() {
-    if (downloadBusy) return;
-    downloadTarget = null;
-    downloadResult = null;
-  }
-
-  async function confirmDownload() {
-    if (!downloadTarget) return;
-    downloadBusy = true;
-    downloadResult = null;
-    try {
-      downloadResult = await invoke<string>("download_song_to", {
-        id: downloadTarget.id,
-        destDir: downloadDir.trim() || null,
-      });
-    } catch (e) {
       actionError = "下载失败：" + String(e);
-    } finally {
-      downloadBusy = false;
     }
   }
 
@@ -282,6 +363,13 @@
   }
 
   function menuItems(item: SearchResultItem): MenuItem[] {
+    if (selectedKeys.size > 1 && selectedKeys.has(keyOf(item))) {
+      return [
+        { label: "下载 " + selectedKeys.size + " 首", icon: Download, action: () => void bulkSearchDownload() },
+        { label: "编辑标签", icon: Tag, action: () => void bulkSearchTag() },
+        { label: "取消多选", icon: X, action: clearSearchSelection },
+      ];
+    }
     return [
       { label: "播放", icon: Play, action: () => playResult(item) },
       { label: "编辑标签", icon: Tag, action: () => editTags(item) },
@@ -398,12 +486,26 @@
           class:playing={playingKey === item.platform + ":" + item.source_id}
           role="button"
           tabindex="0"
-          onclick={() => playResult(item)}
+          onclick={(e) => onSearchRowClick(item, i, e)}
           onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}
-          oncontextmenu={(e) => openMenu(e, item)}
+          oncontextmenu={(e) => onSearchRowContext(item, i, e)}
         >
           <div class="res-index">
-            {#if item.cover_url}
+            {#if selectedKeys.size > 0}
+              <input
+                type="checkbox"
+                class="row-check"
+                checked={selectedKeys.has(keyOf(item))}
+                onclick={(e) => e.stopPropagation()}
+                onchange={(e) => {
+                  const next = new Set(selectedKeys);
+                  if (e.currentTarget.checked) next.add(keyOf(item));
+                  else next.delete(keyOf(item));
+                  selectedKeys = next;
+                  selectionAnchor = i;
+                }}
+              />
+            {:else if item.cover_url}
               <img class="res-cover" src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={(e) => proxyCover(e, item)} />
             {:else}
               {(searchPage.page - 1) * searchPage.pageSize + i + 1}
@@ -437,39 +539,24 @@
   {/if}
 </div>
 
-{#if downloadTarget}
-  <div class="download-backdrop" role="presentation" onclick={closeDownload}>
-    <div class="download-dialog" role="dialog" aria-label="下载歌曲" onclick={(e) => e.stopPropagation()}>
-      <h3>下载歌曲</h3>
-      <p class="download-title truncate">{downloadTarget.title}</p>
-      <label class="download-label" for="search-download-dir">保存到</label>
-      <input
-        id="search-download-dir"
-        class="download-input"
-        type="text"
-        bind:value={downloadDir}
-        disabled={downloadBusy}
-      />
-      {#if downloadResult}
-        <p class="download-success">已保存到：<span>{downloadResult}</span></p>
-      {/if}
-      <div class="download-actions">
-        <button class="btn-secondary" onclick={closeDownload} disabled={downloadBusy}>关闭</button>
-        {#if !downloadResult}
-          <button class="btn-primary" onclick={confirmDownload} disabled={downloadBusy}>
-            {downloadBusy ? "下载中…" : "开始下载"}
-          </button>
-        {/if}
-      </div>
-    </div>
-  </div>
-{/if}
-
 {#if menu}
   <ContextMenu items={menuItems(menu.item)} x={menu.x} y={menu.y} onclose={() => (menu = null)} />
 {/if}
 {#if editingSong}
   <TagEditor song={editingSong} onclose={() => (editingSong = null)} />
+{/if}
+{#if bulkTagSongs}
+  <MultiTagEditor
+    songs={bulkTagSongs}
+    onclose={() => {
+      bulkTagSongs = null;
+      clearSearchSelection();
+    }}
+    onsaved={() => {
+      bulkTagSongs = null;
+      clearSearchSelection();
+    }}
+  />
 {/if}
 
 <style>
@@ -685,6 +772,8 @@
     text-align: center;
     flex: none;
   }
+
+  .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
 
   .res-cover {
     display: block;

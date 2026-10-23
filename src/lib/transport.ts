@@ -366,8 +366,13 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
       );
     case "get_song":
       return remoteRequest<T>("GET", "/api/v1/songs/" + encodeURIComponent(arg<string>(args, "id")));
-    case "get_song_details":
-      return remoteRequest<T>("GET", "/api/v1/songs/" + encodeURIComponent(arg<string>(args, "id")));
+    case "get_song_details": {
+      const song = await remoteRequest(
+        "GET",
+        "/api/v1/songs/" + encodeURIComponent(arg<string>(args, "id")),
+      );
+      return { song, files: [] } as T;
+    }
     case "get_player_status":
       return remoteRequest<T>("GET", "/api/v1/player/status");
     case "get_lyrics":
@@ -574,8 +579,12 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
       return remoteRequest<T>("POST", "/api/v1/cache/clear", {
         kind: args.kind,
       });
-    case "fetch_remote_image":
-      return args.url as T;
+    case "fetch_remote_image": {
+      const base = remote?.baseUrl ?? "";
+      const url = String(args.url ?? "");
+      const referer = args.referer ? "&referer=" + encodeURIComponent(String(args.referer)) : "";
+      return (base + "/api/v1/image?url=" + encodeURIComponent(url) + referer) as T;
+    }
     case "get_default_download_dir":
       return "Downloads" as T;
     default:
