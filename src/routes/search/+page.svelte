@@ -11,8 +11,9 @@
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
   import { isTauri } from "$lib/isTauri";
-  import { downloadTarget as remoteDownloadTarget, isRemoteMode } from "$lib/transport";
+  import { downloadTarget as remoteDownloadTarget, getPlaybackTarget, isRemoteMode } from "$lib/transport";
   import { open, save } from "@tauri-apps/plugin-dialog";
+  import { downloadManyWeb } from "$lib/download";
   import type { PlaybackStatus, PluginState, SearchResultItem, Song } from "$lib/types";
 
   let pluginState = $state<PluginState | null>(null);
@@ -87,14 +88,7 @@
     menu = null;
     if (songs.length === 0) return;
     if (!isTauri) {
-      for (const song of songs) {
-        const target = remoteDownloadTarget(song.id);
-        if (!target) continue;
-        const link = document.createElement("a");
-        link.href = target.url;
-        link.download = "";
-        link.click();
-      }
+      await downloadManyWeb(songs.map((song) => ({ id: song.id, title: song.title })));
       clearSearchSelection();
       return;
     }
@@ -244,16 +238,38 @@
       ),
     );
     try {
-      const status = await invoke<PlaybackStatus>("play_online_results", {
-        results: queue,
-        index,
-      });
-      player.mediaId = status.media_id ?? null;
-      player.title = item.title;
-      player.artist = item.artist || "Unknown";
-      player.album = item.album || "";
-      player.cover = item.cover_url ?? null;
-      player.isPlaying = true;
+      const clientPlayback = !isTauri || (isRemoteMode() && getPlaybackTarget() === "client");
+      if (clientPlayback) {
+        const songs: Song[] = [];
+        for (const entry of queue) {
+          songs.push(
+            await invoke<Song>("resolve_song", {
+              platform: entry.platform,
+              sourceId: entry.source_id,
+            }),
+          );
+        }
+        await player.playFromList(
+          songs.map((song) => ({
+            id: song.id,
+            title: song.title,
+            artist: song.artist,
+            album: song.album,
+          })),
+          songs[index].id,
+        );
+      } else {
+        const status = await invoke<PlaybackStatus>("play_online_results", {
+          results: queue,
+          index,
+        });
+        player.mediaId = status.media_id ?? null;
+        player.title = item.title;
+        player.artist = item.artist || "Unknown";
+        player.album = item.album || "";
+        player.cover = item.cover_url ?? null;
+        player.isPlaying = true;
+      }
       playingKey = item.platform + ":" + item.source_id;
     } catch (e) {
       console.error("play error:", e);

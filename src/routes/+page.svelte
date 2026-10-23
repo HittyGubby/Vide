@@ -21,6 +21,7 @@
   import { downloadTarget as remoteDownloadTarget, isRemoteMode } from "$lib/transport";
   import { isTauri } from "$lib/isTauri";
   import { save, open } from "@tauri-apps/plugin-dialog";
+  import { downloadManyWeb } from "$lib/download";
   import { canManage } from "$lib/stores/auth.svelte";
   import { libraryQuery } from "$lib/stores/libraryQuery.svelte";
   import { loadClientState, saveClientState } from "$lib/clientState";
@@ -963,7 +964,8 @@
       }
       showSongNote("已下载 " + songs.length + " 首");
     } else {
-      for (const song of songs) await downloadSong(song);
+      await downloadManyWeb(songs.map((song) => ({ id: song.id, title: displayTitle(song) })));
+      showSongNote("已交给浏览器下载 " + songs.length + " 首");
     }
     clearSelection();
   }

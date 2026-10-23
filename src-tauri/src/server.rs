@@ -985,7 +985,12 @@ async fn resolve_song(
     headers: HeaderMap,
     Json(request): Json<ResolveRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    require_csrf(&state, &headers)?;
+    // Resolving is part of read-only search/playback. When media is public,
+    // guests may resolve search results too; private servers still require
+    // a session.
+    if !state.public_media {
+        require_session(&state, &headers, None)?;
+    }
     let song = ensure_online_song(&state, &request.platform, &request.source_id).await?;
     Ok(Json(serde_json::to_value(public_song(song)).unwrap_or_default()))
 }
