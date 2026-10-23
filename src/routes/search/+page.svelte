@@ -7,6 +7,14 @@
   import { player } from "$lib/stores/player.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
   import { searchPage } from "$lib/stores/searchPage.svelte";
+  import { loadClientState, saveClientState } from "$lib/clientState";
+  import {
+    defaultColumnPrefs,
+    normalizeColumnPrefs,
+    visibleColumns,
+    type TableColumnDef,
+    type TableColumnPrefs,
+  } from "$lib/table/columns";
   import ContextMenu, { type MenuItem } from "$lib/components/song/ContextMenu.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
@@ -24,6 +32,85 @@
   let selectedKeys = $state<Set<string>>(new Set());
   let selectionAnchor = $state<number | null>(null);
   let bulkTagSongs = $state<Song[] | null>(null);
+
+  type SearchColumnId = "index" | "title" | "artist" | "album" | "duration" | "source";
+  const SEARCH_COLUMNS: TableColumnDef[] = [
+    { id: "index", label: "#", defWidth: 42, min: 36, fixed: true },
+    { id: "title", label: "标题", defWidth: 340, min: 160 },
+    { id: "artist", label: "作者", defWidth: 180, min: 100 },
+    { id: "album", label: "专辑", defWidth: 200, min: 100 },
+    { id: "source", label: "来源", defWidth: 94, min: 70 },
+    { id: "duration", label: "时长", defWidth: 64, min: 52, fixed: true },
+  ];
+  let columnPrefs = $state<TableColumnPrefs>(defaultColumnPrefs(SEARCH_COLUMNS));
+  let columnMenu = $state<{ x: number; y: number } | null>(null);
+  let columnMenuItems = $state<MenuItem[]>([]);
+  let columnSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let columns = $derived(visibleColumns(SEARCH_COLUMNS, columnPrefs));
+
+  function saveColumns() {
+    if (columnSaveTimer) clearTimeout(columnSaveTimer);
+    columnSaveTimer = setTimeout(() => {
+      columnSaveTimer = undefined;
+      void saveClientState("search.columns", $state.snapshot(columnPrefs));
+    }, 250);
+  }
+
+  function columnWidth(id: string): number {
+    const def = SEARCH_COLUMNS.find((column) => column.id === id)!;
+    return Math.max(columnPrefs.sizing[id] ?? def.defWidth, def.min);
+  }
+
+  function columnStyle(id: string): string {
+    return "flex:0 0 " + columnWidth(id) + "px;width:" + columnWidth(id) + "px;min-width:0;";
+  }
+
+  function openColumnMenu(e: MouseEvent) {
+    e.preventDefault();
+    const visibleCount = columns.length;
+    columnMenuItems = SEARCH_COLUMNS.map((def) => {
+      const shown = columnPrefs.visibility[def.id] !== false;
+      return {
+        label: (shown ? "✓ " : "   ") + def.label,
+        disabled: shown && visibleCount <= 1,
+        action: () => {
+          if (shown && visibleCount <= 1) return;
+          columnPrefs = {
+            ...columnPrefs,
+            visibility: { ...columnPrefs.visibility, [def.id]: !shown },
+          };
+          saveColumns();
+        },
+      };
+    });
+    columnMenu = { x: e.clientX, y: e.clientY };
+  }
+
+  async function loadSearchColumns() {
+    const stored = await loadClientState<unknown>("search.columns");
+    columnPrefs = normalizeColumnPrefs(SEARCH_COLUMNS, stored);
+  }
+
+  function startColumnResize(e: PointerEvent, def: TableColumnDef) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = columnWidth(def.id);
+    function move(event: PointerEvent) {
+      const width = Math.max(def.min, startWidth + event.clientX - startX);
+      columnPrefs = {
+        ...columnPrefs,
+        sizing: { ...columnPrefs.sizing, [def.id]: width },
+      };
+    }
+    function up() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      saveColumns();
+    }
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   function keyOf(item: SearchResultItem) {
     return item.platform + ":" + item.source_id;
@@ -166,6 +253,7 @@
   }
 
   onMount(async () => {
+    void loadSearchColumns();
     await loadPlatforms();
     const q = $page.url.searchParams.get("q");
     if (q && q !== searchPage.query) {
@@ -488,13 +576,16 @@
     </div>
   {:else if searchPage.results.length > 0}
     <div class="results">
-      <div class="result-header">
-        <div class="res-index">#</div>
-        <div class="res-main">标题</div>
-        <div class="res-artist">作者</div>
-        <div class="res-album">专辑</div>
-        <div class="res-duration">时长</div>
-        <div class="res-action"></div>
+      <div class="result-header" oncontextmenu={openColumnMenu}>
+        {#each columns as column (column.id)}
+          <div class="res-col res-{column.id}" style={columnStyle(column.id)}>
+            {column.id === "index" ? "#" : column.label}
+            {#if !column.fixed}
+              <div class="col-resize" onpointerdown={(e) => startColumnResize(e, column)}></div>
+            {/if}
+          </div>
+        {/each}
+        <button class="column-btn" onclick={openColumnMenu} title="列显示">⋯</button>
       </div>
       {#each pageResults as item, i}
         <div
@@ -506,34 +597,43 @@
           onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}
           oncontextmenu={(e) => onSearchRowContext(item, i, e)}
         >
-          <div class="res-index">
-            {#if selectedKeys.size > 0}
-              <input
-                type="checkbox"
-                class="row-check"
-                checked={selectedKeys.has(keyOf(item))}
-                onclick={(e) => e.stopPropagation()}
-                onchange={(e) => {
-                  const next = new Set(selectedKeys);
-                  if (e.currentTarget.checked) next.add(keyOf(item));
-                  else next.delete(keyOf(item));
-                  selectedKeys = next;
-                  selectionAnchor = i;
-                }}
-              />
-            {:else if item.cover_url}
-              <img class="res-cover" src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={(e) => proxyCover(e, item)} />
-            {:else}
-              {(searchPage.page - 1) * searchPage.pageSize + i + 1}
+          {#each columns as column (column.id)}
+            {#if column.id === "index"}
+              <div class="res-index" style={columnStyle(column.id)}>
+                {#if selectedKeys.size > 0}
+                  <input
+                    type="checkbox"
+                    class="row-check"
+                    checked={selectedKeys.has(keyOf(item))}
+                    onclick={(e) => e.stopPropagation()}
+                    onchange={(e) => {
+                      const next = new Set(selectedKeys);
+                      if (e.currentTarget.checked) next.add(keyOf(item));
+                      else next.delete(keyOf(item));
+                      selectedKeys = next;
+                      selectionAnchor = i;
+                    }}
+                  />
+                {:else if item.cover_url}
+                  <img class="res-cover" src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={(e) => proxyCover(e, item)} />
+                {:else}
+                  {(searchPage.page - 1) * searchPage.pageSize + i + 1}
+                {/if}
+              </div>
+            {:else if column.id === "title"}
+              <div class="res-main" style={columnStyle(column.id)}>
+                <span class="res-title truncate">{item.title}</span>
+              </div>
+            {:else if column.id === "artist"}
+              <div class="res-artist truncate" style={columnStyle(column.id)}>{item.artist || ""}</div>
+            {:else if column.id === "album"}
+              <div class="res-album truncate" style={columnStyle(column.id)}>{item.album || ""}</div>
+            {:else if column.id === "source"}
+              <div class="res-source" style={columnStyle(column.id)}>{platformLabel(item.platform)}</div>
+            {:else if column.id === "duration"}
+              <div class="res-duration" style={columnStyle(column.id)}>{item.duration ? formatDuration(item.duration) : ""}</div>
             {/if}
-          </div>
-          <div class="res-main">
-            <span class="res-title truncate">{item.title}</span>
-            <span class="res-platform">{platformLabel(item.platform)}</span>
-          </div>
-          <div class="res-artist truncate">{item.artist || ""}</div>
-          <div class="res-album truncate">{item.album || ""}</div>
-          <div class="res-duration">{item.duration ? formatDuration(item.duration) : ""}</div>
+          {/each}
           <button class="row-btn" onclick={(e) => { e.stopPropagation(); playResult(item); }} title="播放">
             <Play size={14} />
           </button>
@@ -557,6 +657,9 @@
 
 {#if menu}
   <ContextMenu items={menuItems(menu.item)} x={menu.x} y={menu.y} onclose={() => (menu = null)} />
+{/if}
+{#if columnMenu}
+  <ContextMenu items={columnMenuItems} x={columnMenu.x} y={columnMenu.y} onclose={() => (columnMenu = null)} />
 {/if}
 {#if editingSong}
   <TagEditor song={editingSong} onclose={() => (editingSong = null)} />
@@ -747,6 +850,44 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  .res-col {
+    position: relative;
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    color: var(--color-base-content) / 0.5;
+    overflow: hidden;
+  }
+
+  .col-resize {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 2;
+  }
+
+  .column-btn {
+    margin-left: auto;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: var(--color-base-200);
+    color: var(--color-base-content) / 0.6;
+    font-size: 12px;
+    padding: 0 6px;
+    cursor: pointer;
+  }
+
+  .res-source {
+    font-size: 12px;
+    color: var(--color-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .result-header {
