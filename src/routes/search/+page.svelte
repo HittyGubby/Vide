@@ -18,6 +18,7 @@
   import ContextMenu, { type MenuItem } from "$lib/components/song/ContextMenu.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
+  import SongRow from "$lib/components/song/SongRow.svelte";
   import { isTauri } from "$lib/isTauri";
   import { downloadTarget as remoteDownloadTarget, getPlaybackTarget, isRemoteMode } from "$lib/transport";
   import { open, save } from "@tauri-apps/plugin-dialog";
@@ -588,56 +589,33 @@
         <button class="column-btn" onclick={openColumnMenu} title="列显示">⋯</button>
       </div>
       {#each pageResults as item, i}
-        <div
-          class="result-row"
-          class:playing={playingKey === item.platform + ":" + item.source_id}
-          role="button"
-          tabindex="0"
+        <SongRow
+          data={{
+            id: keyOf(item),
+            title: item.title,
+            artist: item.artist || "",
+            album: item.album || "",
+            duration: item.duration,
+            cover: item.cover_url,
+            platform: platformLabel(item.platform),
+          }}
+          columns={columns.map((column) => ({ id: column.id, style: columnStyle(column.id) }))}
+          index={(searchPage.page - 1) * searchPage.pageSize + i}
+          selected={selectedKeys.has(keyOf(item))}
+          selectionMode={selectedKeys.size > 0}
+          playing={playingKey === item.platform + ":" + item.source_id}
+          showCoverInIndex={true}
           onclick={(e) => onSearchRowClick(item, i, e)}
-          onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}
-          oncontextmenu={(e) => onSearchRowContext(item, i, e)}
-        >
-          {#each columns as column (column.id)}
-            {#if column.id === "index"}
-              <div class="res-index" style={columnStyle(column.id)}>
-                {#if selectedKeys.size > 0}
-                  <input
-                    type="checkbox"
-                    class="row-check"
-                    checked={selectedKeys.has(keyOf(item))}
-                    onclick={(e) => e.stopPropagation()}
-                    onchange={(e) => {
-                      const next = new Set(selectedKeys);
-                      if (e.currentTarget.checked) next.add(keyOf(item));
-                      else next.delete(keyOf(item));
-                      selectedKeys = next;
-                      selectionAnchor = i;
-                    }}
-                  />
-                {:else if item.cover_url}
-                  <img class="res-cover" src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={(e) => proxyCover(e, item)} />
-                {:else}
-                  {(searchPage.page - 1) * searchPage.pageSize + i + 1}
-                {/if}
-              </div>
-            {:else if column.id === "title"}
-              <div class="res-main" style={columnStyle(column.id)}>
-                <span class="res-title truncate">{item.title}</span>
-              </div>
-            {:else if column.id === "artist"}
-              <div class="res-artist truncate" style={columnStyle(column.id)}>{item.artist || ""}</div>
-            {:else if column.id === "album"}
-              <div class="res-album truncate" style={columnStyle(column.id)}>{item.album || ""}</div>
-            {:else if column.id === "source"}
-              <div class="res-source" style={columnStyle(column.id)}>{platformLabel(item.platform)}</div>
-            {:else if column.id === "duration"}
-              <div class="res-duration" style={columnStyle(column.id)}>{item.duration ? formatDuration(item.duration) : ""}</div>
-            {/if}
-          {/each}
-          <button class="row-btn" onclick={(e) => { e.stopPropagation(); playResult(item); }} title="播放">
-            <Play size={14} />
-          </button>
-        </div>
+          oncontext={(e) => onSearchRowContext(item, i, e)}
+          onselect={(checked) => {
+            const next = new Set(selectedKeys);
+            if (checked) next.add(keyOf(item));
+            else next.delete(keyOf(item));
+            selectedKeys = next;
+            selectionAnchor = i;
+          }}
+          oncovererror={(e) => void proxyCover(e, item)}
+        />
       {/each}
       {#if totalPages > 1}
         <div class="pager">
