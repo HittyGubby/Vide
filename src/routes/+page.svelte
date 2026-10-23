@@ -31,6 +31,7 @@
   import MetadataEditor from "$lib/components/song/MetadataEditor.svelte";
   import MultiMetadataEditor from "$lib/components/song/MultiMetadataEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
+  import SongRow from "$lib/components/song/SongRow.svelte";
   import type { Song, SongDetails, Tag } from "$lib/types";
   import type { MenuItem } from "$lib/components/song/ContextMenu.svelte";
 
@@ -1261,66 +1262,39 @@
         {#each sortedSongs.slice(virtualSlice.start, virtualSlice.end) as song, k}
           {@const i = virtualSlice.start + k}
           <div
-            class="song-row"
-            class:is-playing={isPlaying(song)}
+            class="song-row-host"
             class:located={locatorTarget === song.id}
             data-song-id={song.id}
-            onclick={(e) => onRowClick(song, i, e)}
             onmouseenter={(e) => scheduleHover(song, e)}
             onmouseleave={scheduleHideHover}
-            oncontextmenu={(e) => onRowContext(song, i, e)}
           >
-            {#each headers as header (header.id)}
-              <div class="td" style={colStyle(header)}>
-                {#if header.column.id === "num"}
-                  {#if selectedIds.size > 0}
-                    <input
-                      type="checkbox"
-                      class="row-check"
-                      checked={selectedIds.has(song.id)}
-                      onclick={(e) => e.stopPropagation()}
-                      onchange={(e) => {
-                        const next = new Set(selectedIds);
-                        if (e.currentTarget.checked) next.add(song.id);
-                        else next.delete(song.id);
-                        selectedIds = next;
-                        selectionAnchor = i;
-                      }}
-                    />
-                  {:else if isPlaying(song)}
-                    <span class="playing-indicator">&#9654;</span>
-                  {:else}
-                    <span class="cell-num">{i + 1}</span>
-                  {/if}
-                {:else if header.column.id === "name"}
-                  <div class="name-cell">
-                    <span class="name-text">{displayTitle(song)}</span>
-                    {#if platformTag(song)}
-                      <span class="tag-badge" class:local={platformTag(song)!.kind == "local"}>
-                        {platformTag(song)!.label}
-                      </span>
-                    {/if}
-                  </div>
-                {:else if header.column.id === "tag"}
-                  <div class="tag-cell">
-                    {#each song.tags as tag}
-                      <span
-                        class="tag-pill"
-                        style="--tag-hue: {tagHue(tag)}"
-                        title={tag.namespace + ":" + tag.value}
-                      >{tag.namespace}:{tag.value}</span>
-                    {/each}
-                  </div>
-                {:else if header.column.id === "artist"}
-                  <span class="cell-text">{displayText(song, "artist")}</span>
-                {:else if header.column.id === "album"}
-                  <span class="cell-text">{displayText(song, "album")}</span>
-                {:else if header.column.id === "time"}
-                  <span class="cell-time">{formatDuration(song.metadata.duration)}</span>
-                {/if}
-              </div>
-            {/each}
-            <div class="col-filler"></div>
+            <SongRow
+              data={{
+                id: song.id,
+                title: displayTitle(song),
+                artist: displayText(song, "artist"),
+                album: displayText(song, "album"),
+                duration: song.metadata.duration,
+                tags: song.tags,
+                sources: song.sources,
+                local: song.local || song.paths.length > 0,
+              }}
+              columns={headers.map((header) => ({ id: header.id, style: colStyle(header) }))}
+              index={i}
+              selected={selectedIds.has(song.id)}
+              selectionMode={selectedIds.size > 0}
+              playing={isPlaying(song)}
+              height={36}
+              onclick={(e) => onRowClick(song, i, e)}
+              oncontext={(e) => onRowContext(song, i, e)}
+              onselect={(checked) => {
+                const next = new Set(selectedIds);
+                if (checked) next.add(song.id);
+                else next.delete(song.id);
+                selectedIds = next;
+                selectionAnchor = i;
+              }}
+            />
           </div>
         {/each}
         <div class="virtual-pad" style="height: {virtualSlice.padBottom}px"></div>
@@ -1518,6 +1492,8 @@
     user-select: text; /* allow copying */
   }
 
+  .song-row-host { position: relative; }
+  .song-row-host.located { outline: 1px solid var(--color-primary); border-radius: 4px; }
   .cell-num { color: var(--color-base-content) / 0.5; font-size: 12px; }
   .playing-indicator { color: var(--color-primary); font-size: 10px; }
   .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
