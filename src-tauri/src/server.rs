@@ -1532,6 +1532,10 @@ async fn player_toggle(
 ) -> Result<Json<Value>, StatusCode> {
     require_csrf(&state, &headers)?;
     let mut player = state.app.player.lock().await;
+    // Refresh the end-of-track state before toggling so a hidden/stale client
+    // does not turn "pause" into a restart of an already-finished mpv process.
+    player.check_alive().await;
+    player.refresh().await;
     let status = player
         .toggle_pause()
         .await
