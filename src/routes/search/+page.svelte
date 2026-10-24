@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { Search, History, Play, Loader, X, Tag, Info, Download } from "lucide-svelte";
+  import { Search, History, Play, Loader, X, Tag as TagIcon, Info, Download } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
   import { searchPage } from "$lib/stores/searchPage.svelte";
@@ -22,7 +22,7 @@
   import { downloadTarget as remoteDownloadTarget, getPlaybackTarget, isRemoteMode } from "$lib/transport";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { downloadManyWeb } from "$lib/download";
-  import type { PlaybackStatus, PluginState, SearchResultItem, Song } from "$lib/types";
+  import type { PlaybackStatus, PluginState, SearchResultItem, Song, Tag as SongTag } from "$lib/types";
 
   let pluginState = $state<PluginState | null>(null);
   let editingSong = $state<Song | null>(null);
@@ -32,15 +32,16 @@
   let selectedKeys = $state<Set<string>>(new Set());
   let selectionAnchor = $state<number | null>(null);
   let bulkTagSongs = $state<Song[] | null>(null);
+  let tagsByKey = $state<Record<string, SongTag[]>>({});
+  let editingItemKey = $state<string | null>(null);
 
-  type SearchColumnId = "index" | "title" | "artist" | "album" | "duration" | "source";
   const SEARCH_COLUMNS: TableColumnDef[] = [
-    { id: "index", label: "#", defWidth: 42, min: 36, fixed: true },
-    { id: "title", label: "标题", defWidth: 340, min: 160 },
-    { id: "artist", label: "作者", defWidth: 180, min: 100 },
-    { id: "album", label: "专辑", defWidth: 200, min: 100 },
-    { id: "source", label: "来源", defWidth: 94, min: 70 },
-    { id: "duration", label: "时长", defWidth: 64, min: 52, fixed: true },
+    { id: "index", label: "#", defWidth: 40, min: 40, fixed: true },
+    { id: "title", label: "名称", defWidth: 300, min: 120 },
+    { id: "tag", label: "标签", defWidth: 160, min: 80 },
+    { id: "artist", label: "歌手", defWidth: 130, min: 80 },
+    { id: "album", label: "专辑", defWidth: 140, min: 80 },
+    { id: "duration", label: "时长", defWidth: 52, min: 52, fixed: true },
   ];
   let columnPrefs = $state<TableColumnPrefs>(defaultColumnPrefs(SEARCH_COLUMNS));
   let columnMenu = $state<{ x: number; y: number } | null>(null);
@@ -373,12 +374,33 @@
 
   async function editTags(item: SearchResultItem) {
     try {
-      editingSong = await invoke<Song>("resolve_song", {
+      const song = await invoke<Song>("resolve_song", {
         platform: item.platform,
         sourceId: item.source_id,
       });
+      editingSong = song;
+      editingItemKey = keyOf(item);
+      tagsByKey = { ...tagsByKey, [keyOf(item)]: song.tags };
     } catch (e) {
       actionError = "读取歌曲信息失败：" + String(e);
+    }
+  }
+
+  async function closeTagEditor() {
+    editingSong = null;
+    const key = editingItemKey;
+    editingItemKey = null;
+    if (!key) return;
+    const item = searchPage.results.find((entry) => keyOf(entry) === key);
+    if (!item) return;
+    try {
+      const song = await invoke<Song>("resolve_song", {
+        platform: item.platform,
+        sourceId: item.source_id,
+      });
+      tagsByKey = { ...tagsByKey, [key]: song.tags };
+    } catch {
+      /* keep previous tags */
     }
   }
 
@@ -476,13 +498,13 @@
     if (selectedKeys.size > 1 && selectedKeys.has(keyOf(item))) {
       return [
         { label: "下载 " + selectedKeys.size + " 首", icon: Download, action: () => void bulkSearchDownload() },
-        { label: "编辑标签", icon: Tag, action: () => void bulkSearchTag() },
+        { label: "编辑标签", icon: TagIcon, action: () => void bulkSearchTag() },
         { label: "取消多选", icon: X, action: clearSearchSelection },
       ];
     }
     return [
       { label: "播放", icon: Play, action: () => playResult(item) },
-      { label: "编辑标签", icon: Tag, action: () => editTags(item) },
+      { label: "编辑标签", icon: TagIcon, action: () => editTags(item) },
       { label: "详情", icon: Info, action: () => showDetails(item) },
       { label: "下载", icon: Download, action: () => openDownload(item) },
     ];
@@ -576,7 +598,6 @@
           </div>
         {/each}
         <div class="col-filler"></div>
-        <button class="column-btn" onclick={openColumnMenu} title="列显示">⋯</button>
       </div>
       {#each pageResults as item, i}
         <div
@@ -615,12 +636,16 @@
                   <span class="name-text">{item.title}</span>
                   <span class="tag-badge">{platformLabel(item.platform)}</span>
                 </div>
+              {:else if column.id === "tag"}
+                <div class="tag-cell">
+                  {#each tagsByKey[keyOf(item)] ?? [] as tag}
+                    <span class="tag-pill">{tag.namespace}:{tag.value}</span>
+                  {/each}
+                </div>
               {:else if column.id === "artist"}
                 <span class="cell-text">{item.artist || ""}</span>
               {:else if column.id === "album"}
                 <span class="cell-text">{item.album || ""}</span>
-              {:else if column.id === "source"}
-                <span class="cell-text">{platformLabel(item.platform)}</span>
               {:else if column.id === "duration"}
                 <span class="cell-time">{item.duration ? formatDuration(item.duration) : ""}</span>
               {/if}
@@ -652,7 +677,7 @@
   <ContextMenu items={columnMenuItems} x={columnMenu.x} y={columnMenu.y} onclose={() => (columnMenu = null)} />
 {/if}
 {#if editingSong}
-  <TagEditor song={editingSong} onclose={() => (editingSong = null)} />
+  <TagEditor song={editingSong} onclose={() => void closeTagEditor()} />
 {/if}
 {#if bulkTagSongs}
   <MultiTagEditor
@@ -661,7 +686,13 @@
       bulkTagSongs = null;
       clearSearchSelection();
     }}
-    onsaved={() => {
+    onsaved={(updated) => {
+      const next = { ...tagsByKey };
+      for (const song of updated) {
+        const source = song.sources[0];
+        if (source) next[source.platform + ":" + source.id] = song.tags;
+      }
+      tagsByKey = next;
       bulkTagSongs = null;
       clearSearchSelection();
     }}
@@ -912,6 +943,8 @@
   .name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
   .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag-badge { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--color-primary) / 0.15; color: var(--color-primary); }
+  .tag-cell { width: 100%; min-width: 0; display: flex; align-items: center; gap: 3px; overflow: hidden; white-space: nowrap; }
+  .tag-pill { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; font-size: 10px; line-height: 1.5; padding: 1px 5px; border-radius: 999px; background: var(--color-base-300); color: var(--color-base-content) / 0.7; }
   .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cell-time { color: var(--color-base-content) / 0.6; font-size: 12px; }
   .column-btn { border: 1px solid var(--panel-border); border-radius: 4px; background: var(--color-base-200); color: var(--color-base-content) / 0.6; font-size: 12px; padding: 0 6px; margin: 4px; cursor: pointer; }
