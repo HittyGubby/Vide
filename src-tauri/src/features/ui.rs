@@ -692,6 +692,7 @@ pub async fn play_online_results(
                 metadata: SongMetadata {
                     duration: item.duration,
                     cover_url: item.cover_url.clone(),
+                    added_time: Some(crate::infra::time::now_date()),
                     ..Default::default()
                 },
             };
@@ -876,21 +877,39 @@ pub async fn resolve_song(
 ) -> Result<Song, String> {
     let song_id = song_id_from_source(&platform, &source_id);
 
-    // Return existing song if already in DB
-    if let Some(song) = state
+    let plugins = state
+        .plugins
+        .as_ref()
+        .ok_or_else(|| "plugin system not available".to_string())?;
+
+    // Existing online songs may have been cached before cover/duration/date
+    // metadata was available. Refresh only the missing fields.
+    if let Some(mut song) = state
         .db
         .get_song(&song_id)
         .await
         .map_err(|e| e.to_string())?
     {
+        let needs_metadata = song.metadata.cover_url.is_none()
+            || song.metadata.duration.is_none()
+            || song.metadata.added_time.is_none();
+        if needs_metadata {
+            if let Ok(item) = plugins.resolve(&platform, &source_id).await {
+                if song.metadata.cover_url.is_none() {
+                    song.metadata.cover_url = item.cover_url.clone();
+                }
+                if song.metadata.duration.is_none() {
+                    song.metadata.duration = item.duration;
+                }
+                if song.metadata.added_time.is_none() {
+                    song.metadata.added_time = Some(crate::infra::time::now_date());
+                }
+                let _ = state.db.upsert_song(&song).await;
+            }
+        }
         return Ok(song);
     }
 
-    // Resolve metadata via plugin
-    let plugins = state
-        .plugins
-        .as_ref()
-        .ok_or_else(|| "plugin system not available".to_string())?;
     let item = plugins.resolve(&platform, &source_id).await?;
 
     let title = item.title.clone();
@@ -911,6 +930,7 @@ pub async fn resolve_song(
         metadata: SongMetadata {
             duration: item.duration,
             cover_url: item.cover_url.clone(),
+            added_time: Some(crate::infra::time::now_date()),
             ..Default::default()
         },
     };
@@ -975,6 +995,7 @@ pub async fn import_playlist_url(
                 metadata: SongMetadata {
                     duration: item.duration,
                     cover_url: item.cover_url.clone(),
+                    added_time: Some(crate::infra::time::now_date()),
                     ..Default::default()
                 },
             };

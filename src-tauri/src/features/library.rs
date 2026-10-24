@@ -117,7 +117,7 @@ pub async fn scan_root(
             }
             Ok(None) => {
                 // New song – extract metadata and create
-                let metadata = match extract_file_metadata(&path) {
+                let mut metadata = match extract_file_metadata(&path) {
                     Ok(m) => m,
                     Err(e) => {
                         warn!("metadata error for {:?}: {e}", path);
@@ -129,6 +129,10 @@ pub async fn scan_root(
                         m
                     }
                 };
+
+                if metadata.added_time.is_none() {
+                    metadata.added_time = Some(crate::infra::time::now_date());
+                }
 
                 let title = metadata
                     .title

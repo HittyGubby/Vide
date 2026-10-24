@@ -992,6 +992,19 @@ impl Database {
 
     const SETTINGS_KEY: &'static str = "video_settings";
 
+    /// Backfill missing added_time values for older databases.
+    pub async fn backfill_added_time(&self) -> Result<u64, DbErr> {
+        let result = self
+            .conn
+            .execute(Statement::from_sql_and_values(
+                self.conn.get_database_backend(),
+                "UPDATE songs SET added_time = ? WHERE added_time IS NULL OR added_time = ''",
+                [crate::infra::time::now_date().into()],
+            ))
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Load the full app settings, merging stored value over defaults.
     pub async fn load_app_settings(&self) -> Result<crate::models::AppSettings, DbErr> {
         let defaults = crate::models::AppSettings::default();

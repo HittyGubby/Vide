@@ -936,20 +936,37 @@ async fn ensure_online_song(
     source_id: &str,
 ) -> Result<crate::models::Song, StatusCode> {
     let song_id = crate::infra::hash::song_id_from_source(platform, source_id);
-    if let Some(song) = state
+    let plugins = state
+        .app
+        .plugins
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    if let Some(mut song) = state
         .app
         .db
         .get_song(&song_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
+        let needs_metadata = song.metadata.cover_url.is_none()
+            || song.metadata.duration.is_none()
+            || song.metadata.added_time.is_none();
+        if needs_metadata {
+            if let Ok(item) = plugins.resolve(platform, source_id).await {
+                if song.metadata.cover_url.is_none() {
+                    song.metadata.cover_url = item.cover_url.clone();
+                }
+                if song.metadata.duration.is_none() {
+                    song.metadata.duration = item.duration;
+                }
+                if song.metadata.added_time.is_none() {
+                    song.metadata.added_time = Some(crate::infra::time::now_date());
+                }
+                let _ = state.app.db.upsert_song(&song).await;
+            }
+        }
         return Ok(song);
     }
-    let plugins = state
-        .app
-        .plugins
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let item = plugins
         .resolve(platform, source_id)
         .await
@@ -968,6 +985,7 @@ async fn ensure_online_song(
         metadata: crate::models::SongMetadata {
             duration: item.duration,
             cover_url: item.cover_url.clone(),
+            added_time: Some(crate::infra::time::now_date()),
             ..Default::default()
         },
     };

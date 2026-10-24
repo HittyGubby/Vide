@@ -47,5 +47,6 @@ argon2 = "0.5"
 rand = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+chrono = "0.4"
 tauri-plugin-global-shortcut = "2"
 unicode-normalization = "0.1"

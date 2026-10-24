@@ -37,6 +37,7 @@ impl AppState {
         );
 
         // Load config first (before wrapping in Arc/Mutex) to read plugin_dir
+        let _ = db.backfill_added_time().await;
         let app_config = AppConfig::load(&db).await.unwrap_or_default();
         let plugin_dir = resolve_plugin_dir(&app_config.plugin_dir);
         if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
