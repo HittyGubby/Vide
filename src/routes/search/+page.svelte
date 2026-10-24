@@ -18,7 +18,6 @@
   import ContextMenu, { type MenuItem } from "$lib/components/song/ContextMenu.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
-  import SongRow from "$lib/components/song/SongRow.svelte";
   import { isTauri } from "$lib/isTauri";
   import { downloadTarget as remoteDownloadTarget, getPlaybackTarget, isRemoteMode } from "$lib/transport";
   import { open, save } from "@tauri-apps/plugin-dialog";
@@ -252,6 +251,12 @@
       searchPage.activePlatform = list[0].id;
     }
   }
+
+  onMount(() => {
+    const handler = () => void doSearch();
+    window.addEventListener("vide:online-search", handler);
+    return () => window.removeEventListener("vide:online-search", handler);
+  });
 
   onMount(async () => {
     void loadSearchColumns();
@@ -516,22 +521,6 @@
 </script>
 
 <div class="search-view">
-  <div class="inline-search">
-    <div class="inline-input">
-      <Search size={14} class="inline-icon" />
-      <input
-        type="text"
-        placeholder="搜索歌曲或粘贴链接..."
-        bind:value={searchPage.query}
-        onkeydown={keydown}
-      />
-      {#if searchPage.loading}
-        <Loader size={14} class="spin" />
-      {/if}
-    </div>
-    <button class="search-btn" onclick={doSearch} disabled={!searchPage.query.trim()}>搜索</button>
-  </div>
-
   <div class="source-tabs">
     {#each platforms as p}
       <button
@@ -577,45 +566,68 @@
     </div>
   {:else if searchPage.results.length > 0}
     <div class="results">
-      <div class="result-header" oncontextmenu={openColumnMenu}>
+      <div class="table-header" oncontextmenu={openColumnMenu}>
         {#each columns as column (column.id)}
-          <div class="res-col res-{column.id}" style={columnStyle(column.id)}>
-            {column.id === "index" ? "#" : column.label}
+          <div class="th" style={columnStyle(column.id)}>
+            <span class="th-label">{column.id === "index" ? "#" : column.label}</span>
             {#if !column.fixed}
-              <div class="col-resize" onpointerdown={(e) => startColumnResize(e, column)}></div>
+              <div class="resize-handle" onpointerdown={(e) => startColumnResize(e, column)} title="拖动调宽"></div>
             {/if}
           </div>
         {/each}
+        <div class="col-filler"></div>
         <button class="column-btn" onclick={openColumnMenu} title="列显示">⋯</button>
       </div>
       {#each pageResults as item, i}
-        <SongRow
-          data={{
-            id: keyOf(item),
-            title: item.title,
-            artist: item.artist || "",
-            album: item.album || "",
-            duration: item.duration,
-            cover: item.cover_url,
-            platform: platformLabel(item.platform),
-          }}
-          columns={columns.map((column) => ({ id: column.id, style: columnStyle(column.id) }))}
-          index={(searchPage.page - 1) * searchPage.pageSize + i}
-          selected={selectedKeys.has(keyOf(item))}
-          selectionMode={selectedKeys.size > 0}
-          playing={playingKey === item.platform + ":" + item.source_id}
-          showCoverInIndex={true}
+        <div
+          class="song-row"
+          class:playing={playingKey === item.platform + ":" + item.source_id}
+          role="button"
+          tabindex="0"
           onclick={(e) => onSearchRowClick(item, i, e)}
-          oncontext={(e) => onSearchRowContext(item, i, e)}
-          onselect={(checked) => {
-            const next = new Set(selectedKeys);
-            if (checked) next.add(keyOf(item));
-            else next.delete(keyOf(item));
-            selectedKeys = next;
-            selectionAnchor = i;
-          }}
-          oncovererror={(e) => void proxyCover(e, item)}
-        />
+          onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}
+          oncontextmenu={(e) => onSearchRowContext(item, i, e)}
+        >
+          {#each columns as column (column.id)}
+            <div class="td" style={columnStyle(column.id)}>
+              {#if column.id === "index"}
+                {#if selectedKeys.size > 0}
+                  <input
+                    type="checkbox"
+                    class="row-check"
+                    checked={selectedKeys.has(keyOf(item))}
+                    onclick={(e) => e.stopPropagation()}
+                    onchange={(e) => {
+                      const next = new Set(selectedKeys);
+                      if (e.currentTarget.checked) next.add(keyOf(item));
+                      else next.delete(keyOf(item));
+                      selectedKeys = next;
+                      selectionAnchor = i;
+                    }}
+                  />
+                {:else if item.cover_url}
+                  <img class="row-cover" src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={(e) => void proxyCover(e, item)} />
+                {:else}
+                  <span class="cell-num">{(searchPage.page - 1) * searchPage.pageSize + i + 1}</span>
+                {/if}
+              {:else if column.id === "title"}
+                <div class="name-cell">
+                  <span class="name-text">{item.title}</span>
+                  <span class="tag-badge">{platformLabel(item.platform)}</span>
+                </div>
+              {:else if column.id === "artist"}
+                <span class="cell-text">{item.artist || ""}</span>
+              {:else if column.id === "album"}
+                <span class="cell-text">{item.album || ""}</span>
+              {:else if column.id === "source"}
+                <span class="cell-text">{platformLabel(item.platform)}</span>
+              {:else if column.id === "duration"}
+                <span class="cell-time">{item.duration ? formatDuration(item.duration) : ""}</span>
+              {/if}
+            </div>
+          {/each}
+          <div class="col-filler"></div>
+        </div>
       {/each}
       {#if totalPages > 1}
         <div class="pager">
@@ -867,6 +879,42 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  .table-header {
+    display: flex;
+    align-items: stretch;
+    height: 32px;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--color-base-200);
+    border-bottom: 1px solid var(--color-base-300);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-base-content) / 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    user-select: none;
+  }
+  .th { position: relative; display: flex; align-items: center; padding: 0 8px; min-width: 0; border-right: 1px solid var(--panel-border); }
+  .th-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 3; touch-action: none; }
+  .resize-handle::after { content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px; width: 1px; background: transparent; }
+  .resize-handle:hover::after { background: var(--color-primary) / 0.6; }
+  .col-filler { flex: 1 1 0; min-width: 0; }
+  .song-row { display: flex; align-items: center; height: 36px; min-width: 0; color: var(--color-base-content); font-size: 13px; cursor: pointer; transition: background .1s; border-radius: 0; }
+  .song-row:hover { background: var(--color-base-300) / 0.7; }
+  .song-row.playing { background: var(--color-primary) / 0.12; }
+  .song-row.playing .name-text { color: var(--color-primary); }
+  .td { display: flex; align-items: center; padding: 0 8px; min-width: 0; user-select: text; overflow: hidden; }
+  .cell-num { color: var(--color-base-content) / 0.5; font-size: 12px; }
+  .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
+  .row-cover { width: 30px; height: 30px; border-radius: 3px; object-fit: cover; }
+  .name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+  .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag-badge { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--color-primary) / 0.15; color: var(--color-primary); }
+  .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cell-time { color: var(--color-base-content) / 0.6; font-size: 12px; }
+  .column-btn { border: 1px solid var(--panel-border); border-radius: 4px; background: var(--color-base-200); color: var(--color-base-content) / 0.6; font-size: 12px; padding: 0 6px; margin: 4px; cursor: pointer; }
 
   .result-header {
     display: flex;

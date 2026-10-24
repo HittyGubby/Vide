@@ -22,12 +22,6 @@
   import { isTauri } from "$lib/isTauri";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import { downloadManyWeb } from "$lib/download";
-  import {
-    defaultColumnPrefs,
-    normalizeColumnPrefs,
-    visibleColumns,
-    type TableColumnDef,
-  } from "$lib/table/columns";
   import { canManage } from "$lib/stores/auth.svelte";
   import { libraryQuery } from "$lib/stores/libraryQuery.svelte";
   import { loadClientState, saveClientState } from "$lib/clientState";
@@ -37,7 +31,6 @@
   import MetadataEditor from "$lib/components/song/MetadataEditor.svelte";
   import MultiMetadataEditor from "$lib/components/song/MultiMetadataEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
-  import SongRow from "$lib/components/song/SongRow.svelte";
   import type { Song, SongDetails, Tag } from "$lib/types";
   import type { MenuItem } from "$lib/components/song/ContextMenu.svelte";
 
@@ -78,20 +71,41 @@
     return COLUMN_DEFS.find((d) => d.id === id)!;
   }
 
-  const SHARED_COLUMN_DEFS: TableColumnDef[] = COLUMN_DEFS.map((def) => ({
-    id: def.id,
-    label: def.label,
-    defWidth: def.defWidth,
-    min: def.min,
-    fixed: def.fixed != null,
-  }));
-
   function defaultPrefs(): ColumnPrefs {
-    return defaultColumnPrefs(SHARED_COLUMN_DEFS) as ColumnPrefs;
+    return {
+      sizing: Object.fromEntries(COLUMN_DEFS.map((d) => [d.id, d.defWidth])),
+      order: COLUMN_DEFS.map((d) => d.id),
+      visibility: Object.fromEntries(COLUMN_DEFS.map((d) => [d.id, true])),
+    };
   }
 
+  /** Validate stored column prefs and fill in any missing columns. */
   function normalizePrefs(data: unknown): ColumnPrefs {
-    return normalizeColumnPrefs(SHARED_COLUMN_DEFS, data) as ColumnPrefs;
+    const dflt = defaultPrefs();
+    if (!data || typeof data !== "object" || Array.isArray(data)) return dflt;
+    const raw = data as Record<string, unknown>;
+
+    const sizing: ColumnSizingState = { ...dflt.sizing };
+    const rawSizing = (raw.sizing ?? {}) as Record<string, unknown>;
+    for (const d of COLUMN_DEFS) {
+      const w = Number(rawSizing[d.id]);
+      if (Number.isFinite(w) && w > 0) sizing[d.id] = Math.max(w, d.min);
+    }
+
+    const order: ColumnOrderState = Array.isArray(raw.order)
+      ? raw.order.filter((id): id is string => COLUMN_DEFS.some((d) => d.id === id))
+      : [];
+    for (const d of COLUMN_DEFS) if (!order.includes(d.id)) order.push(d.id);
+
+    const visibility: ColumnVisibilityState = { ...dflt.visibility };
+    const rawVis = (raw.visibility ?? {}) as Record<string, unknown>;
+    for (const d of COLUMN_DEFS) {
+      if (typeof rawVis[d.id] === "boolean") visibility[d.id] = rawVis[d.id] as boolean;
+    }
+    // Keep at least one column on screen.
+    if (!COLUMN_DEFS.some((d) => visibility[d.id] !== false)) visibility.name = true;
+
+    return { sizing, order, visibility };
   }
 
   let prefs = $state<ColumnPrefs>(defaultPrefs());
@@ -151,7 +165,7 @@
 
   /** Ids of the currently visible columns, in display order. */
   function visibleIds(): string[] {
-    return visibleColumns(SHARED_COLUMN_DEFS, prefs).map((def) => def.id);
+    return prefs.order.filter((id) => prefs.visibility[id] !== false);
   }
 
   /** The visible, resizable column after `id` — the one that gives up width. */
@@ -951,7 +965,6 @@
       showSongNote("已下载 " + songs.length + " 首");
     } else {
       await downloadManyWeb(songs.map((song) => ({ id: song.id, title: displayTitle(song) })));
-      showSongNote("已交给浏览器下载 " + songs.length + " 首");
     }
     clearSelection();
   }
@@ -1247,39 +1260,66 @@
         {#each sortedSongs.slice(virtualSlice.start, virtualSlice.end) as song, k}
           {@const i = virtualSlice.start + k}
           <div
-            class="song-row-host"
+            class="song-row"
+            class:is-playing={isPlaying(song)}
             class:located={locatorTarget === song.id}
             data-song-id={song.id}
+            onclick={(e) => onRowClick(song, i, e)}
             onmouseenter={(e) => scheduleHover(song, e)}
             onmouseleave={scheduleHideHover}
+            oncontextmenu={(e) => onRowContext(song, i, e)}
           >
-            <SongRow
-              data={{
-                id: song.id,
-                title: displayTitle(song),
-                artist: displayText(song, "artist"),
-                album: displayText(song, "album"),
-                duration: song.metadata.duration,
-                tags: song.tags,
-                sources: song.sources,
-                local: song.local || song.paths.length > 0,
-              }}
-              columns={headers.map((header) => ({ id: header.id, style: colStyle(header) }))}
-              index={i}
-              selected={selectedIds.has(song.id)}
-              selectionMode={selectedIds.size > 0}
-              playing={isPlaying(song)}
-              height={36}
-              onclick={(e) => onRowClick(song, i, e)}
-              oncontext={(e) => onRowContext(song, i, e)}
-              onselect={(checked) => {
-                const next = new Set(selectedIds);
-                if (checked) next.add(song.id);
-                else next.delete(song.id);
-                selectedIds = next;
-                selectionAnchor = i;
-              }}
-            />
+            {#each headers as header (header.id)}
+              <div class="td" style={colStyle(header)}>
+                {#if header.column.id === "num"}
+                  {#if selectedIds.size > 0}
+                    <input
+                      type="checkbox"
+                      class="row-check"
+                      checked={selectedIds.has(song.id)}
+                      onclick={(e) => e.stopPropagation()}
+                      onchange={(e) => {
+                        const next = new Set(selectedIds);
+                        if (e.currentTarget.checked) next.add(song.id);
+                        else next.delete(song.id);
+                        selectedIds = next;
+                        selectionAnchor = i;
+                      }}
+                    />
+                  {:else if isPlaying(song)}
+                    <span class="playing-indicator">&#9654;</span>
+                  {:else}
+                    <span class="cell-num">{i + 1}</span>
+                  {/if}
+                {:else if header.column.id === "name"}
+                  <div class="name-cell">
+                    <span class="name-text">{displayTitle(song)}</span>
+                    {#if platformTag(song)}
+                      <span class="tag-badge" class:local={platformTag(song)!.kind == "local"}>
+                        {platformTag(song)!.label}
+                      </span>
+                    {/if}
+                  </div>
+                {:else if header.column.id === "tag"}
+                  <div class="tag-cell">
+                    {#each song.tags as tag}
+                      <span
+                        class="tag-pill"
+                        style="--tag-hue: {tagHue(tag)}"
+                        title={tag.namespace + ":" + tag.value}
+                      >{tag.namespace}:{tag.value}</span>
+                    {/each}
+                  </div>
+                {:else if header.column.id === "artist"}
+                  <span class="cell-text">{displayText(song, "artist")}</span>
+                {:else if header.column.id === "album"}
+                  <span class="cell-text">{displayText(song, "album")}</span>
+                {:else if header.column.id === "time"}
+                  <span class="cell-time">{formatDuration(song.metadata.duration)}</span>
+                {/if}
+              </div>
+            {/each}
+            <div class="col-filler"></div>
           </div>
         {/each}
         <div class="virtual-pad" style="height: {virtualSlice.padBottom}px"></div>
@@ -1477,8 +1517,6 @@
     user-select: text; /* allow copying */
   }
 
-  .song-row-host { position: relative; }
-  .song-row-host.located { outline: 1px solid var(--color-primary); border-radius: 4px; }
   .cell-num { color: var(--color-base-content) / 0.5; font-size: 12px; }
   .playing-indicator { color: var(--color-primary); font-size: 10px; }
   .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }

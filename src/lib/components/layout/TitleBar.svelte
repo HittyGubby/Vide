@@ -5,13 +5,14 @@
   import { ui } from "$lib/stores/ui.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import QueryBar from "$lib/components/library/QueryBar.svelte";
+  import OnlineSearchBar from "$lib/components/search/OnlineSearchBar.svelte";
   import { isTauri } from "$lib/isTauri";
 
   const appWindow = (isTauri ? getCurrentWindow() : null) as ReturnType<typeof getCurrentWindow>;
 
-  // The titlebar query bar only belongs to the library list. The search page
-  // has its own full-width input; settings has nothing to search here.
-  let showSearch = $derived($page.url.pathname === "/");
+  // Library search uses QueryBar; online search reuses the same title-bar slot.
+  let showSearch = $derived($page.url.pathname === "/" || $page.url.pathname === "/search");
+  let onlineSearch = $derived($page.url.pathname === "/search");
 
   let isMaximized = $state(false);
 
@@ -50,7 +51,7 @@
 
   {#if showSearch}
     <div class="search-area" style="-webkit-app-region: no-drag">
-      <QueryBar />
+      {#if onlineSearch}<OnlineSearchBar />{:else}<QueryBar />{/if}
     </div>
   {:else}
     <div class="drag-fill" data-tauri-drag-region></div>

@@ -5,6 +5,7 @@
   import Sidebar from "$lib/components/layout/Sidebar.svelte";
   import PlayerBar from "$lib/components/layout/PlayerBar.svelte";
   import QueryBar from "$lib/components/library/QueryBar.svelte";
+  import OnlineSearchBar from "$lib/components/search/OnlineSearchBar.svelte";
   import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
   import { ui } from "$lib/stores/ui.svelte";
   import { player } from "$lib/stores/player.svelte";
@@ -26,6 +27,7 @@
   let error = $state<string | null>(null);
   let target = $state<PlaybackTarget>("client");
   let onLibrary = $derived($page.url.pathname === "/");
+  let onSearch = $derived($page.url.pathname === "/search");
 
   onMount(() => {
     target = getPlaybackTarget();
@@ -73,6 +75,8 @@
     <header class="web-topbar">
       {#if onLibrary}
         <div class="web-query"><QueryBar /></div>
+      {:else if onSearch}
+        <div class="web-query"><OnlineSearchBar /></div>
       {/if}
       <div class="web-auth">
         {#if authenticated}
