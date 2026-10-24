@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "$lib/transport";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { page } from "$app/stores";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { Search, History, Play, Loader, X, Tag as TagIcon, Info, Download } from "lucide-svelte";
@@ -48,6 +48,64 @@
   let columnMenuItems = $state<MenuItem[]>([]);
   let columnSaveTimer: ReturnType<typeof setTimeout> | undefined;
   let columns = $derived(visibleColumns(SEARCH_COLUMNS, columnPrefs));
+  let resultsEl = $state<HTMLDivElement | null>(null);
+  let dragColumn = $state<string | null>(null);
+
+  function fitSearchToWidth(width = resultsEl?.clientWidth ?? 0) {
+    if (width <= 0) return;
+    const visible = columns;
+    const fixedTotal = visible
+      .filter((column) => column.fixed)
+      .reduce((sum, column) => sum + columnWidth(column.id), 0);
+    const resizable = visible.filter((column) => !column.fixed);
+    const target = width - fixedTotal;
+    const total = resizable.reduce((sum, column) => sum + columnWidth(column.id), 0);
+    if (resizable.length === 0 || target <= 0 || total <= 0) return;
+    const scale = target / total;
+    if (Math.abs(scale - 1) < 0.01) return;
+    const sizing = { ...columnPrefs.sizing };
+    for (const column of resizable) {
+      sizing[column.id] = Math.max(column.min, Math.round(columnWidth(column.id) * scale));
+    }
+    columnPrefs = { ...columnPrefs, sizing };
+    saveColumns();
+  }
+
+  function startColumnDrag(e: DragEvent, id: string) {
+    dragColumn = id;
+    e.dataTransfer?.setData("text/plain", id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+
+  function dragColumnOver(e: DragEvent, id: string) {
+    e.preventDefault();
+    if (dragColumn && dragColumn !== id) {
+      (e.currentTarget as HTMLElement).classList.add("drop-target");
+    }
+  }
+
+  function dragColumnLeave(e: DragEvent) {
+    (e.currentTarget as HTMLElement).classList.remove("drop-target");
+  }
+
+  function dropColumn(e: DragEvent, targetId: string) {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).classList.remove("drop-target");
+    const sourceId = dragColumn;
+    dragColumn = null;
+    if (!sourceId || sourceId === targetId) return;
+    const from = columnPrefs.order.indexOf(sourceId);
+    const to = columnPrefs.order.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const order = [...columnPrefs.order];
+    order.splice(to, 0, ...order.splice(from, 1));
+    columnPrefs = { ...columnPrefs, order };
+    saveColumns();
+  }
+
+  function endColumnDrag() {
+    dragColumn = null;
+  }
 
   function saveColumns() {
     if (columnSaveTimer) clearTimeout(columnSaveTimer);
@@ -86,6 +144,16 @@
     });
     columnMenu = { x: e.clientX, y: e.clientY };
   }
+
+  $effect(() => {
+    const el = resultsEl;
+    if (!el) return;
+    const run = () => untrack(() => fitSearchToWidth(el.clientWidth));
+    const observer = new ResizeObserver(run);
+    observer.observe(el);
+    run();
+    return () => observer.disconnect();
+  });
 
   async function loadSearchColumns() {
     const stored = await loadClientState<unknown>("search.columns");
@@ -587,10 +655,20 @@
       <p>{searchPage.error}</p>
     </div>
   {:else if searchPage.results.length > 0}
-    <div class="results">
+    <div class="results" bind:this={resultsEl}>
       <div class="table-header" oncontextmenu={openColumnMenu}>
         {#each columns as column (column.id)}
-          <div class="th" style={columnStyle(column.id)}>
+          <div
+            class="th"
+            style={columnStyle(column.id)}
+            draggable="true"
+            ondragstart={(e) => startColumnDrag(e, column.id)}
+            ondragover={(e) => dragColumnOver(e, column.id)}
+            ondragleave={dragColumnLeave}
+            ondrop={(e) => dropColumn(e, column.id)}
+            ondragend={endColumnDrag}
+            title="拖动调序，右键显示/隐藏列"
+          >
             <span class="th-label">{column.id === "index" ? "#" : column.label}</span>
             {#if !column.fixed}
               <div class="resize-handle" onpointerdown={(e) => startColumnResize(e, column)} title="拖动调宽"></div>
@@ -926,7 +1004,9 @@
     letter-spacing: 0.5px;
     user-select: none;
   }
-  .th { position: relative; display: flex; align-items: center; padding: 0 8px; min-width: 0; border-right: 1px solid var(--panel-border); }
+  .th { position: relative; display: flex; align-items: center; padding: 0 8px; min-width: 0; border-right: 1px solid var(--panel-border); cursor: grab; }
+  .th:active { cursor: grabbing; }
+  .th.drop-target::after { content: ""; position: absolute; right: -1px; top: 4px; bottom: 4px; width: 2px; background: var(--color-primary); border-radius: 1px; }
   .th-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 3; touch-action: none; }
   .resize-handle::after { content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px; width: 1px; background: transparent; }
