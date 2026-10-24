@@ -35,6 +35,7 @@
   let tagsByKey = $state<Record<string, SongTag[]>>({});
   let editingItemKey = $state<string | null>(null);
 
+  const SEARCH_COLUMNS_KEY = "search.columns.v2";
   const SEARCH_COLUMNS: TableColumnDef[] = [
     { id: "index", label: "#", defWidth: 40, min: 40, fixed: true },
     { id: "title", label: "名称", defWidth: 300, min: 120 },
@@ -111,7 +112,7 @@
     if (columnSaveTimer) clearTimeout(columnSaveTimer);
     columnSaveTimer = setTimeout(() => {
       columnSaveTimer = undefined;
-      void saveClientState("search.columns", $state.snapshot(columnPrefs));
+      void saveClientState(SEARCH_COLUMNS_KEY, $state.snapshot(columnPrefs));
     }, 250);
   }
 
@@ -156,7 +157,7 @@
   });
 
   async function loadSearchColumns() {
-    const stored = await loadClientState<unknown>("search.columns");
+    const stored = await loadClientState<unknown>(SEARCH_COLUMNS_KEY);
     columnPrefs = normalizeColumnPrefs(SEARCH_COLUMNS, stored);
   }
 

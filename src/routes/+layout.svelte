@@ -17,11 +17,18 @@
   import { loadClientState, saveClientState } from "$lib/clientState";
   import WebShell from "$lib/components/web/WebShell.svelte";
   import { isTauri } from "$lib/isTauri";
+  import { goto } from "$app/navigation";
 
   let { children } = $props();
 
   onMount(() => {
     void restoreRemoteSession();
+    // Tauri/WebView can restore an /index.html or empty path after a restart.
+    // Normalize it so the library route and its top-bar search mount.
+    const path = window.location.pathname;
+    if (path === "" || path === "/index.html") {
+      void goto("/");
+    }
   });
 
   const WINDOW_STATE_KEY = "vide_window_state";

@@ -11,8 +11,9 @@
   const appWindow = (isTauri ? getCurrentWindow() : null) as ReturnType<typeof getCurrentWindow>;
 
   // Library search uses QueryBar; online search reuses the same title-bar slot.
-  let showSearch = $derived($page.url.pathname === "/" || $page.url.pathname === "/search");
-  let onlineSearch = $derived($page.url.pathname === "/search");
+  let path = $derived(String($page.url.pathname) === "" || String($page.url.pathname) === "/index.html" ? "/" : String($page.url.pathname));
+  let showSearch = $derived(path === "/" || path === "/search");
+  let onlineSearch = $derived(path === "/search");
 
   let isMaximized = $state(false);
 

@@ -26,8 +26,9 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let target = $state<PlaybackTarget>("client");
-  let onLibrary = $derived($page.url.pathname === "/");
-  let onSearch = $derived($page.url.pathname === "/search");
+  let path = $derived(String($page.url.pathname) === "" || String($page.url.pathname) === "/index.html" ? "/" : String($page.url.pathname));
+  let onLibrary = $derived(path === "/");
+  let onSearch = $derived(path === "/search");
 
   onMount(() => {
     target = getPlaybackTarget();
