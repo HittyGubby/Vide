@@ -1,8 +1,6 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { page } from "$app/stores";
-  import { ChevronDown } from "lucide-svelte";
-  import { ui } from "$lib/stores/ui.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import QueryBar from "$lib/components/library/QueryBar.svelte";
   import OnlineSearchBar from "$lib/components/search/OnlineSearchBar.svelte";
@@ -56,17 +54,6 @@
     </div>
   {:else}
     <div class="drag-fill" data-tauri-drag-region></div>
-  {/if}
-
-  {#if ui.showPlayerDetail}
-    <button
-      class="back-btn"
-      style="-webkit-app-region: no-drag"
-      onclick={() => (ui.showPlayerDetail = false)}
-      title="收起"
-    >
-      <ChevronDown size={16} />
-    </button>
   {/if}
 
   <div class="window-controls" style="-webkit-app-region: no-drag">

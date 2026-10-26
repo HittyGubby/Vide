@@ -6,9 +6,7 @@
   import PlayerBar from "$lib/components/layout/PlayerBar.svelte";
   import QueryBar from "$lib/components/library/QueryBar.svelte";
   import OnlineSearchBar from "$lib/components/search/OnlineSearchBar.svelte";
-  import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
   import LoginDialog from "$lib/shell/LoginDialog.svelte";
-  import { ui } from "$lib/stores/ui.svelte";
   import { player } from "$lib/stores/player.svelte";
   import { auth } from "$lib/stores/auth.svelte";
   import {
@@ -68,11 +66,7 @@
       </div>
     </header>
     <main class="web-content">{@render children()}</main>
-    {#if ui.showPlayerDetail}
-      <PlayerDetail />
-    {:else}
-      <PlayerBar />
-    {/if}
+    <PlayerBar />
   </div>
 </div>
 

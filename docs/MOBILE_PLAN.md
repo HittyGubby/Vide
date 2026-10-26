@@ -1,6 +1,6 @@
 # Vide 移动端 Web 视图与模块化计划
 
-> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）、P3/P3b ✅（设置与拆分）。下一步 P4：`/player`。
+> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）、P3/P3b ✅（设置与拆分）、P4 ✅（`/player`）。下一步 P5：性能。
 > 按 P0 → P5 顺序推进。
 > 范围：手机浏览器的响应式 Web 视图（含 PWA 之外的移动体验）；**不做** Tauri 移动端、**不做** PWA/Service Worker/离线/IndexedDB。
 
@@ -129,8 +129,8 @@ src/lib/
 | P2 ✅ | 搜索切片：通用 `VirtualMobileList`（曲库与搜索结果共用滚动/虚拟/手势）、移动搜索结果行（封面 · 平台/歌手/专辑/标签）、加载更多、选择态与底部动作面板；封面懒加载 + bilibili 直接走代理；服务端图片磁盘缓存（url+referer 为键，`.type` sidecar，缓存统计不再计 sidecar） | 手机可搜索、加载更多、播放与编辑 |
 | P3 ✅ | 设置切片：单路由 + 移动端分类列表 / `?section=` 两级、桌面 sticky 分区导航 + 滚动高亮；10 个分区组件 + 共享 `SettingsGroup/SettingCard/SettingRow/SettingToggle`；PluginSettings 与 RemoteConnection 改为纯内容组件；表单从 table 改为响应式行式布局 | 手机可逐项配置 |
 | P3b ✅ | PluginSettings 拆成 `PluginCard`（单个插件+详情）、`RouteSettings`（平台路由+argv）与 `pluginHelpers`；TagEditor 拆成 `TagSelected` / `TagHistory` / `TagCatalog` / `TagInput` | 文件行数下降、行为不变 |
-| P4 | `/player` 路由 + 移动端播放详情（封面/歌词分页） | 手机播放页可用 |
-| P5 | 性能：Monaco 移除、压缩/缓存头、payload 瘦身、虚拟列表、预加载 | Lighthouse / 传输体积下降 |
+| P4 ✅ | `/player` 成为正式路由（桌面与手机共用）：去掉 `ui.showPlayerDetail` 覆盖层，播放页不再渲染壳；桌面沿用原 PlayerDetail（含 Tauri 窗口控制与拖拽区），手机用新的 `MobilePlayerDetail`（封面/歌词 scroll-snap 分页、进度、传输键、播放设置底部弹层：模式/音量/倍速）；歌词抽成共享 store；播放栏标题区可点击进入 | 手机播放页可用 |
+| P5 | 性能：Monaco 移除、压缩/缓存头、payload 瘦身、服务端缓存目录跟随 `--data-dir`、本地封面 | Lighthouse / 传输体积下降 |
 
 ## 9. 已决事项
 

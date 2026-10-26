@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation";
   import { Pause, Play, SkipForward } from "lucide-svelte";
   import { player } from "$lib/stores/player.svelte";
-  import { ui } from "$lib/stores/ui.svelte";
+  import { openPlayer } from "$lib/player/navigation";
   import SeekBar from "$lib/components/player/SeekBar.svelte";
   import { loadCoverWithFallback } from "$lib/cover";
 
@@ -25,7 +25,7 @@
   );
 
   function openDetail() {
-    if (player.mediaId) ui.showPlayerDetail = true;
+    if (player.mediaId) openPlayer();
   }
 
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -48,7 +48,6 @@
     pressTimer = setTimeout(() => {
       pressTimer = undefined;
       suppressClick = true;
-      ui.showPlayerDetail = false;
       void goto("/");
       player.requestLocate(player.mediaId!);
       setTimeout(() => (suppressClick = false), 700);

@@ -4,7 +4,7 @@
   import { goto } from "$app/navigation";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { player } from "$lib/stores/player.svelte";
-  import { ui } from "$lib/stores/ui.svelte";
+  import { openPlayer } from "$lib/player/navigation";
   import {
     Play,
     Pause,
@@ -71,14 +71,13 @@
   let totalTime = $derived(formatTime(player.duration));
 
   function openDetail() {
-    if (player.mediaId) ui.showPlayerDetail = true;
+    if (player.mediaId) openPlayer();
   }
 
   // ── Right-click the cover/title/lyrics area → locate the current song. ──
   function locateCurrentSong(e: MouseEvent) {
     e.preventDefault();
     if (!player.mediaId) return;
-    ui.showPlayerDetail = false;
     // Navigate to the library view, then signal the locate via a monotonic
     // counter so repeated right-clicks on the same song always work.
     void goto("/");
@@ -141,7 +140,7 @@
       {/if}
     </button>
 
-    <div class="info">
+    <button class="info" onclick={openDetail} title="播放详情" aria-label="播放详情">
       <div class="info-title truncate">{player.title}</div>
       <div class="info-sub truncate">
         {#if subtitle}
@@ -153,7 +152,7 @@
           <span class="idle-text">选择一首歌曲开始播放</span>
         {/if}
       </div>
-    </div>
+    </button>
   </div>
 
   <!-- Time indicator -->
@@ -272,6 +271,13 @@
     gap: 2px;
     min-width: 0;
     justify-content: center;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
   }
 
   .info-title {

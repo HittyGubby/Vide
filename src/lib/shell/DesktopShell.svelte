@@ -8,8 +8,6 @@
   import TitleBar from "$lib/components/layout/TitleBar.svelte";
   import Sidebar from "$lib/components/layout/Sidebar.svelte";
   import PlayerBar from "$lib/components/layout/PlayerBar.svelte";
-  import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
-  import { ui } from "$lib/stores/ui.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import { player } from "$lib/stores/player.svelte";
   import { loadClientState, saveClientState } from "$lib/clientState";
@@ -331,15 +329,9 @@
     <main class="content">
       {@render children()}
     </main>
-    {#if !ui.showPlayerDetail}
-      <PlayerBar />
-    {/if}
+    <PlayerBar />
   </div>
 </div>
-
-{#if ui.showPlayerDetail}
-  <PlayerDetail />
-{/if}
 
 <style>
   .app-shell {

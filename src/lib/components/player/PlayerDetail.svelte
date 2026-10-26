@@ -3,7 +3,8 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { player } from "$lib/stores/player.svelte";
-  import { ui } from "$lib/stores/ui.svelte";
+  import { playerLyrics } from "$lib/player/lyrics.svelte";
+  import { closePlayer } from "$lib/player/navigation";
   import {
     Play,
     Pause,
@@ -22,7 +23,7 @@
   import PlayModeControl from "$lib/components/player/PlayModeControl.svelte";
   import SeekBar from "$lib/components/player/SeekBar.svelte";
   import LyricsView from "$lib/components/lyrics/LyricsView.svelte";
-  import { parseLyrics } from "$lib/lyrics";
+  import { firstLyricText } from "$lib/lyrics";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import type { Song } from "$lib/types";
@@ -57,7 +58,7 @@
   }
 
   function close() {
-    ui.showPlayerDetail = false;
+    closePlayer();
   }
   function minimize() {
     appWindow.minimize();
@@ -73,55 +74,20 @@
     }
   }
 
-  // Lyrics are loaded per song, independent of playing/paused state.
-  let lyricsText = $state<string | null>(null);
-  let lyricsLoading = $state(false);
-  const lyricsCache = new Map<string, string | null>();
-  let loadedLyricsId: string | null = null;
-
+  // Lyrics are loaded per song, independent of playing/paused state. The store
+  // is shared with the mobile player.
   $effect(() => {
-    const id = player.mediaId;
-    if (!id) {
-      loadedLyricsId = null;
-      lyricsText = null;
-      lyricsLoading = false;
-      return;
-    }
-    if (loadedLyricsId === id) return;
-    loadedLyricsId = id;
-    if (lyricsCache.has(id)) {
-      lyricsText = lyricsCache.get(id) ?? null;
-      lyricsLoading = false;
-      return;
-    }
-    lyricsLoading = true;
-    invoke<string | null>("get_lyrics", { songId: id })
-      .then((lyrics) => {
-        lyricsCache.set(id, lyrics ?? null);
-        if (player.mediaId === id) lyricsText = lyrics ?? null;
-      })
-      .catch(() => {
-        lyricsCache.set(id, null);
-        if (player.mediaId === id) lyricsText = null;
-      })
-      .finally(() => {
-        if (player.mediaId === id) lyricsLoading = false;
-      });
+    void playerLyrics.load(player.mediaId);
   });
 
   // Status text shown next to the time (like LX's "Failed to get lyrics").
   let lyricStatusText = $derived(
-    lyricsLoading ? "加载歌词..." : lyricsText ? firstLyricLine(lyricsText) : "",
+    playerLyrics.loading
+      ? "加载歌词..."
+      : playerLyrics.text
+        ? firstLyricText(playerLyrics.text)
+        : "",
   );
-
-  function firstLyricLine(t: string): string {
-    const l = t.split("\n").map((s) => s.trim()).find((s) => s.length > 0);
-    return l ?? "";
-  }
-
-  // Timed lyrics: parse [mm:ss] markers, highlight the active line. The same
-  // component (and the same user stylesheet) powers the desktop lyrics window.
-  let lrcLines = $derived.by(() => (lyricsText ? parseLyrics(lyricsText) : []));
 
   // ── Playback rate popup ──────────────────────────
   let rateOpen = $state(false);
@@ -169,7 +135,7 @@
 <div class="detail-overlay" onkeydown={(e) => { if (e.key === "Escape") close(); }} role="presentation">
   <div class="detail-bg"></div>
 
-  <div class="detail-header">
+  <div class="detail-header" data-tauri-drag-region>
     <div class="hd-spacer"></div>
     <button class="hd-btn" onclick={close} title="收起"><ChevronDown size={18} /></button>
     {#if isTauri}
@@ -196,14 +162,14 @@
     </div>
 
     <div class="detail-lyrics">
-      {#if lyricsLoading}
+      {#if playerLyrics.loading}
         <p class="lyrics-hint">加载歌词...</p>
-      {:else if lyricsText}
+      {:else if playerLyrics.text}
         <!-- Same component and stylesheet as the desktop lyrics window, so the
              CSS edited in the settings applies here too. -->
         <div class="lyrics-content">
           <LyricsView
-            lines={lrcLines}
+            lines={playerLyrics.lines}
             elapsed={player.elapsed}
             css={settingsStore.settings.detail_lyrics_css}
             manualScroll={true}

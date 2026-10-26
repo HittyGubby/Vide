@@ -146,6 +146,17 @@ function orderedParts(texts: string[]): LyricPart[] {
     .map((text, index) => ({ lang: "lyric-" + (index + 1), text }));
 }
 
+/** First displayable line, without the LRC timestamp (for status hints). */
+export function firstLyricText(raw: string): string {
+  for (const line of raw.split("\n")) {
+    const match = line.match(LRC_LINE);
+    if (match && match[3].trim()) return match[3].trim();
+    const plain = line.trim();
+    if (plain && !plain.startsWith("[")) return plain;
+  }
+  return "";
+}
+
 /** Parse LRC lines, grouping equal timestamps into one ordered line. */
 export function parseLrc(raw: string): LyricLine[] {
   const groups = new Map<number, string[]>();

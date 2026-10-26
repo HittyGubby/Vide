@@ -4,10 +4,8 @@
   import QueryBar from "$lib/components/library/QueryBar.svelte";
   import OnlineSearchBar from "$lib/components/search/OnlineSearchBar.svelte";
   import MiniPlayer from "$lib/components/layout/MiniPlayer.svelte";
-  import PlayerDetail from "$lib/components/player/PlayerDetail.svelte";
   import NavDrawer from "$lib/shell/NavDrawer.svelte";
   import LoginDialog from "$lib/shell/LoginDialog.svelte";
-  import { ui } from "$lib/stores/ui.svelte";
 
   let { children } = $props();
 
@@ -40,11 +38,7 @@
     {@render children()}
   </main>
 
-  {#if ui.showPlayerDetail}
-    <PlayerDetail />
-  {:else}
-    <MiniPlayer />
-  {/if}
+  <MiniPlayer />
 </div>
 
 <NavDrawer bind:open={drawerOpen} onlogin={() => (loginOpen = true)} />

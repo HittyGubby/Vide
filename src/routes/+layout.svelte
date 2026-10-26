@@ -11,6 +11,7 @@
   import { serverStatus } from "$lib/stores/serverStatus.svelte";
   import AppShell from "$lib/shell/AppShell.svelte";
   import { goto } from "$app/navigation";
+  import { page } from "$app/stores";
 
   let { children } = $props();
 
@@ -18,6 +19,10 @@
   // the main window's shell/runtime; it renders bare.
   const isLyricsWindow =
     isTauri && getCurrentWindow().label === LYRICS_WINDOW_LABEL;
+
+  // The full player is a route, not an overlay: it owns the whole viewport,
+  // including the window controls on desktop.
+  let isPlayerRoute = $derived(String($page.url.pathname) === "/player");
 
   onMount(() => {
     const stopPlatform = platform.init();
@@ -44,7 +49,7 @@
   });
 </script>
 
-{#if isLyricsWindow}
+{#if isLyricsWindow || isPlayerRoute}
   {@render children()}
 {:else}
   <AppShell>{@render children()}</AppShell>
