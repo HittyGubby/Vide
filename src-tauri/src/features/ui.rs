@@ -692,7 +692,7 @@ pub async fn play_online_results(
                 metadata: SongMetadata {
                     duration: item.duration,
                     cover_url: item.cover_url.clone(),
-                    added_time: Some(crate::infra::time::now_date()),
+                    added_time: Some(crate::infra::time::now_timestamp()),
                     ..Default::default()
                 },
             };
@@ -902,7 +902,7 @@ pub async fn resolve_song(
                     song.metadata.duration = item.duration;
                 }
                 if song.metadata.added_time.is_none() {
-                    song.metadata.added_time = Some(crate::infra::time::now_date());
+                    song.metadata.added_time = Some(crate::infra::time::now_timestamp());
                 }
                 let _ = state.db.upsert_song(&song).await;
             }
@@ -930,7 +930,7 @@ pub async fn resolve_song(
         metadata: SongMetadata {
             duration: item.duration,
             cover_url: item.cover_url.clone(),
-            added_time: Some(crate::infra::time::now_date()),
+            added_time: Some(crate::infra::time::now_timestamp()),
             ..Default::default()
         },
     };
@@ -995,7 +995,7 @@ pub async fn import_playlist_url(
                 metadata: SongMetadata {
                     duration: item.duration,
                     cover_url: item.cover_url.clone(),
-                    added_time: Some(crate::infra::time::now_date()),
+                    added_time: Some(crate::infra::time::now_timestamp()),
                     ..Default::default()
                 },
             };
@@ -1969,6 +1969,17 @@ pub async fn get_tag_history(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<crate::models::Tag>, String> {
     crate::features::tags::get_tag_history(&*state.db, 50)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_tag_history(
+    state: tauri::State<'_, AppState>,
+    namespace: String,
+    value: String,
+) -> Result<(), String> {
+    crate::features::tags::remove_tag_history(&*state.db, &namespace, &value)
         .await
         .map_err(|e| e.to_string())
 }

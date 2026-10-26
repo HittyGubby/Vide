@@ -386,6 +386,11 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
       );
     case "get_tag_history":
       return remoteRequest<T>("GET", "/api/v1/tag-history");
+    case "remove_tag_history":
+      return remoteRequest<T>("POST", "/api/v1/tag-history/remove", {
+        namespace: arg<string>(args, "namespace"),
+        value: arg<string>(args, "value"),
+      });
     case "get_namespaces":
       return remoteRequest<T>("GET", "/api/v1/namespaces");
     case "get_meta_tags":

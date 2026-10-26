@@ -115,7 +115,29 @@ impl Database {
     pub async fn upsert_song(&self, song: &DomainSong) -> Result<(), DbErr> {
         use entity::{song, song_path, song_source, tag};
 
-        let meta_json = serde_json::to_string(&song.metadata).unwrap_or_default();
+        // `added_time` is a first-class column and the single source of truth.
+        // Keep an existing value when the incoming song does not carry one
+        // (re-scan, metadata rebuild, tag edits) and stamp brand-new rows, so
+        // no code path can silently clear it.
+        let added_time = match song
+            .metadata
+            .added_time
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => value.to_string(),
+            None => song::Entity::find_by_id(song.id.0.clone())
+                .one(&self.conn)
+                .await?
+                .and_then(|row| row.added_time)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(crate::infra::time::now_timestamp),
+        };
+
+        let mut metadata = song.metadata.clone();
+        metadata.added_time = Some(added_time.clone());
+        let meta_json = serde_json::to_string(&metadata).unwrap_or_default();
 
         // Upsert main song row
         let active = song::ActiveModel {
@@ -124,7 +146,7 @@ impl Database {
             artist: Set(song.artist.clone()),
             album: Set(song.album.clone()),
             duration: Set(song.metadata.duration),
-            added_time: Set(song.metadata.added_time.clone()),
+            added_time: Set(Some(added_time)),
             metadata_json: Set(meta_json),
         };
 
@@ -381,8 +403,9 @@ impl Database {
         if metadata.duration.is_none() {
             metadata.duration = db_song.duration;
         }
-        if metadata.added_time.is_none() {
-            metadata.added_time = db_song.added_time;
+        // The column wins: `metadata_json` is a compatibility copy.
+        if db_song.added_time.is_some() {
+            metadata.added_time = db_song.added_time.clone();
         }
 
         Ok(Some(DomainSong {
@@ -506,8 +529,9 @@ impl Database {
                 if metadata.duration.is_none() {
                     metadata.duration = s.duration;
                 }
-                if metadata.added_time.is_none() {
-                    metadata.added_time = s.added_time;
+                // The column wins: `metadata_json` is a compatibility copy.
+                if s.added_time.is_some() {
+                    metadata.added_time = s.added_time.clone();
                 }
                 DomainSong {
                     id: SongId(s.song_id),
@@ -645,8 +669,9 @@ impl Database {
                 if metadata.duration.is_none() {
                     metadata.duration = s.duration;
                 }
-                if metadata.added_time.is_none() {
-                    metadata.added_time = s.added_time;
+                // The column wins: `metadata_json` is a compatibility copy.
+                if s.added_time.is_some() {
+                    metadata.added_time = s.added_time.clone();
                 }
                 DomainSong {
                     id: SongId(s.song_id),
@@ -1019,8 +1044,20 @@ impl Database {
                 [
                     namespace.to_string().into(),
                     value.to_string().into(),
-                    crate::infra::time::now_date().into(),
+                    crate::infra::time::now_precise().into(),
                 ],
+            ))
+            .await?;
+        Ok(())
+    }
+
+    /// Forget one tag from the usage history (it stays on the songs).
+    pub async fn remove_tag_history(&self, namespace: &str, value: &str) -> Result<(), DbErr> {
+        self.conn
+            .execute(Statement::from_sql_and_values(
+                self.conn.get_database_backend(),
+                "DELETE FROM tag_history WHERE namespace = ? AND value = ?",
+                [namespace.to_string().into(), value.to_string().into()],
             ))
             .await?;
         Ok(())
@@ -1053,19 +1090,6 @@ impl Database {
                 value: row.value,
             })
             .collect())
-    }
-
-    /// Backfill missing added_time values for older databases.
-    pub async fn backfill_added_time(&self) -> Result<u64, DbErr> {
-        let result = self
-            .conn
-            .execute(Statement::from_sql_and_values(
-                self.conn.get_database_backend(),
-                "UPDATE songs SET added_time = ? WHERE added_time IS NULL OR added_time = ''",
-                [crate::infra::time::now_date().into()],
-            ))
-            .await?;
-        Ok(result.rows_affected())
     }
 
     /// Load the full app settings, merging stored value over defaults.

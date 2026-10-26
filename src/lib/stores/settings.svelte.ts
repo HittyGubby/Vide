@@ -3,7 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import type { AppSettings, LyricsPosition } from "$lib/types";
 import { defaultShortcuts } from "$lib/shortcuts";
 import { DEFAULT_DESKTOP_LYRICS_CSS, DEFAULT_DETAIL_LYRICS_CSS } from "$lib/lyrics";
-import { applyTheme, DEFAULT_PRIMARY } from "$lib/theme";
+import { applyAppearance, DEFAULT_PRIMARY } from "$lib/theme";
 
 class SettingsStore {
   settings = $state<AppSettings>({
@@ -36,7 +36,7 @@ class SettingsStore {
       /* keep defaults */
     } finally {
       this.loaded = true;
-      applyTheme(this.settings);
+      applyAppearance(this.settings);
     }
   }
 
@@ -58,7 +58,7 @@ class SettingsStore {
   /** Update a field and persist. */
   async update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     this.settings = { ...this.settings, [key]: value };
-    applyTheme(this.settings);
+    applyAppearance(this.settings);
     await this.save();
   }
 }

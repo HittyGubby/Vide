@@ -36,6 +36,11 @@ pub async fn get_tag_history(db: &Database, limit: u64) -> Result<Vec<Tag>, DbEr
     db.list_tag_history(limit).await
 }
 
+/// Forget one entry from the tag-usage history (the song tags are untouched).
+pub async fn remove_tag_history(db: &Database, namespace: &str, value: &str) -> Result<(), DbErr> {
+    db.remove_tag_history(namespace, value).await
+}
+
 /// Remove a specific tag from a song.
 pub async fn remove_tag(db: &Database, song_id: &SongId, namespace: &str, value: &str) -> Result<(), DbErr> {
     use crate::infra::db::entity::tag;

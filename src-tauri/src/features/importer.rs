@@ -221,6 +221,11 @@ pub async fn import_lx_list(db: &Database, root: &Value) -> Result<LxImportRepor
                                 file_name: path
                                     .file_name()
                                     .map(|name| name.to_string_lossy().to_string()),
+                                // Local files are stamped with their own mtime.
+                                added_time: Some(
+                                    crate::infra::time::timestamp_from_path(&path)
+                                        .unwrap_or_else(crate::infra::time::now_timestamp),
+                                ),
                                 ..Default::default()
                             },
                         };
@@ -266,6 +271,7 @@ pub async fn import_lx_list(db: &Database, root: &Value) -> Result<LxImportRepor
                         metadata: SongMetadata {
                             duration,
                             cover_url: text(&meta, "picUrl"),
+                            added_time: Some(crate::infra::time::now_timestamp()),
                             ..Default::default()
                         },
                     };

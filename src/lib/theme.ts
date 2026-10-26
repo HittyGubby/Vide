@@ -28,3 +28,18 @@ export function applyTheme(settings: AppSettings) {
   root.style.setProperty("--color-primary", primary);
   root.style.setProperty("--color-primary-content", readableOn(primary));
 }
+
+/**
+ * Apply every appearance setting that is not layout-specific.
+ *
+ * Window scale and zoom stay in the desktop shell; the theme colour and the
+ * preferred font apply to the web client as well (previously the web build
+ * never loaded settings at startup, so it silently used the defaults).
+ */
+export function applyAppearance(settings: AppSettings) {
+  if (typeof document === "undefined") return;
+  applyTheme(settings);
+  if (settings.font_family) {
+    document.body.style.fontFamily = settings.font_family;
+  }
+}

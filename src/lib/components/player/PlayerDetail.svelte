@@ -28,19 +28,13 @@
   import type { Song } from "$lib/types";
   import { loadCoverWithFallback } from "$lib/cover";
   import { isTauri } from "$lib/isTauri";
+  import { formatTime } from "$lib/songDisplay";
 
   const appWindow = (isTauri ? getCurrentWindow() : null) as ReturnType<typeof getCurrentWindow>;
 
   onMount(() => {
     player.startStatusUpdates();
   });
-
-  function formatTime(secs: number): string {
-    if (!secs || secs <= 0) return "0:00";
-    const m = Math.floor(secs / 60);
-    const s = Math.floor(secs % 60);
-    return m + ":" + s.toString().padStart(2, "0");
-  }
 
   let elapsedFormatted = $derived(formatTime(player.elapsed));
   let durationFormatted = $derived(formatTime(player.duration));
@@ -341,7 +335,7 @@
   .detail-bg {
     position: absolute;
     inset: 0;
-    background: linear-gradient(160deg, var(--color-base-300) / 0.4, var(--color-base-200));
+    background: linear-gradient(160deg, color-mix(in oklch, var(--color-base-300) 40%, transparent), var(--color-base-200));
     z-index: -1;
   }
 
@@ -357,7 +351,7 @@
   .hd-btn {
     display: flex; align-items: center; justify-content: center;
     width: 34px; height: 30px; border-radius: 6px;
-    color: var(--color-base-content) / 0.75; background: none; border: none;
+    color: color-mix(in oklch, var(--color-base-content) 75%, transparent); background: none; border: none;
   }
   .hd-btn:hover { background: var(--color-base-300); color: var(--color-base-content); }
   .hd-close:hover { background: var(--color-error); color: var(--color-error-content); }
@@ -400,7 +394,7 @@
   .cover-img { width: 100%; height: 100%; object-fit: cover; }
   .monogram-large {
     font-weight: 700; font-size: 64px;
-    color: var(--color-base-content) / 0.35;
+    color: color-mix(in oklch, var(--color-base-content) 35%, transparent);
     font-family: Consolas, "Courier New", monospace;
   }
 
@@ -408,7 +402,7 @@
     width: 100%; display: flex; flex-direction: column; gap: 4px;
     font-size: 15px; color: var(--color-base-content);
   }
-  .meta-label { color: var(--color-base-content) / 0.55; margin-right: 4px; }
+  .meta-label { color: color-mix(in oklch, var(--color-base-content) 55%, transparent); margin-right: 4px; }
 
   .detail-lyrics {
     flex: 1;
@@ -427,12 +421,12 @@
   }
   .lyrics-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 8px;
-    color: var(--color-base-content) / 0.55; text-align: center;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent); text-align: center;
   }
   .lyrics-icon { font-size: 40px; opacity: 0.4; }
   .lyrics-text { font-size: 14px; font-weight: 500; }
   .lyrics-sub { font-size: 11px; }
-  .lyrics-hint { text-align: center; color: var(--color-base-content) / 0.55; }
+  .lyrics-hint { text-align: center; color: color-mix(in oklch, var(--color-base-content) 55%, transparent); }
 
   .detail-bottom {
     flex-shrink: 0;
@@ -461,8 +455,8 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px;
   }
-  .detail-time { font-size: 12px; color: var(--color-base-content) / 0.7; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .lyric-status { font-size: 12px; color: var(--color-base-content) / 0.5; max-width: 60%; }
+  .detail-time { font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 70%, transparent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .lyric-status { font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 50%, transparent); max-width: 60%; }
 
   .transport-group { display: flex; align-items: center; gap: 8px; flex: none; }
 
@@ -480,7 +474,7 @@
   }
   .pop-item {
     padding: 5px 12px; border-radius: 5px; font-size: 12px;
-    background: none; border: none; color: var(--color-base-content) / 0.85;
+    background: none; border: none; color: color-mix(in oklch, var(--color-base-content) 85%, transparent);
     text-align: left;
   }
   .pop-item:hover { background: var(--color-base-200); color: var(--color-base-content); }
@@ -489,7 +483,7 @@
   .rate-popup { width: 180px; padding: 10px; gap: 8px; }
   .rate-header {
     display: flex; justify-content: space-between; align-items: center;
-    font-size: 12px; color: var(--color-base-content) / 0.8;
+    font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
   }
   .rate-val { color: var(--color-primary); font-weight: 600; }
   .rate-slider { width: 100%; accent-color: var(--color-primary); }
@@ -497,7 +491,7 @@
   .rate-presets .pop-item { padding: 3px 8px; font-size: 11px; }
   .rate-custom {
     display: flex; align-items: center; gap: 6px; font-size: 12px;
-    color: var(--color-base-content) / 0.8;
+    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
   }
   .rate-input {
     width: 64px; height: 26px; padding: 0 6px; border-radius: 5px;
@@ -510,7 +504,7 @@
   .d-btn {
     display: flex; align-items: center; justify-content: center;
     width: 38px; height: 38px; border-radius: 50%;
-    color: var(--color-base-content) / 0.75;
+    color: color-mix(in oklch, var(--color-base-content) 75%, transparent);
     background: none; border: none; transition: background 0.15s, color 0.15s;
   }
   .d-btn:hover:not(:disabled) { background: var(--color-base-300); color: var(--color-base-content); }

@@ -7,21 +7,17 @@
   import { player } from "$lib/stores/player.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
   import { searchPage } from "$lib/stores/searchPage.svelte";
-  import { loadClientState, saveClientState } from "$lib/clientState";
-  import {
-    defaultColumnPrefs,
-    normalizeColumnPrefs,
-    visibleColumns,
-    type TableColumnDef,
-    type TableColumnPrefs,
-  } from "$lib/table/columns";
-  import ContextMenu, { type MenuItem } from "$lib/components/song/ContextMenu.svelte";
+  import { ColumnLayout } from "$lib/table/columnLayout.svelte";
+  import type { TableColumnDef } from "$lib/table/columns";
+  import ContextMenu from "$lib/components/song/ContextMenu.svelte";
+  import type { MenuItem } from "$lib/ui/menu";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
   import { isTauri } from "$lib/isTauri";
   import { downloadTarget as remoteDownloadTarget, getPlaybackTarget, isRemoteMode } from "$lib/transport";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { downloadManyWeb } from "$lib/download";
+  import { formatDuration } from "$lib/songDisplay";
   import type { PlaybackStatus, PluginState, SearchResultItem, Song, Tag as SongTag } from "$lib/types";
 
   let pluginState = $state<PluginState | null>(null);
@@ -44,33 +40,14 @@
     { id: "album", label: "专辑", defWidth: 140, min: 80 },
     { id: "duration", label: "时长", defWidth: 52, min: 52, fixed: true },
   ];
-  let columnPrefs = $state<TableColumnPrefs>(defaultColumnPrefs(SEARCH_COLUMNS));
+  // Same column layout engine as the library table, so resize/reorder/hide
+  // behave identically on both tables.
+  const layout = new ColumnLayout(SEARCH_COLUMNS, SEARCH_COLUMNS_KEY);
   let columnMenu = $state<{ x: number; y: number } | null>(null);
   let columnMenuItems = $state<MenuItem[]>([]);
-  let columnSaveTimer: ReturnType<typeof setTimeout> | undefined;
-  let columns = $derived(visibleColumns(SEARCH_COLUMNS, columnPrefs));
+  let columns = $derived(layout.visible());
   let resultsEl = $state<HTMLDivElement | null>(null);
   let dragColumn = $state<string | null>(null);
-
-  function fitSearchToWidth(width = resultsEl?.clientWidth ?? 0) {
-    if (width <= 0) return;
-    const visible = columns;
-    const fixedTotal = visible
-      .filter((column) => column.fixed)
-      .reduce((sum, column) => sum + columnWidth(column.id), 0);
-    const resizable = visible.filter((column) => !column.fixed);
-    const target = width - fixedTotal;
-    const total = resizable.reduce((sum, column) => sum + columnWidth(column.id), 0);
-    if (resizable.length === 0 || target <= 0 || total <= 0) return;
-    const scale = target / total;
-    if (Math.abs(scale - 1) < 0.01) return;
-    const sizing = { ...columnPrefs.sizing };
-    for (const column of resizable) {
-      sizing[column.id] = Math.max(column.min, Math.round(columnWidth(column.id) * scale));
-    }
-    columnPrefs = { ...columnPrefs, sizing };
-    saveColumns();
-  }
 
   function startColumnDrag(e: DragEvent, id: string) {
     dragColumn = id;
@@ -95,30 +72,15 @@
     const sourceId = dragColumn;
     dragColumn = null;
     if (!sourceId || sourceId === targetId) return;
-    const from = columnPrefs.order.indexOf(sourceId);
-    const to = columnPrefs.order.indexOf(targetId);
-    if (from < 0 || to < 0) return;
-    const order = [...columnPrefs.order];
-    order.splice(to, 0, ...order.splice(from, 1));
-    columnPrefs = { ...columnPrefs, order };
-    saveColumns();
+    layout.move(sourceId, targetId);
   }
 
   function endColumnDrag() {
     dragColumn = null;
   }
 
-  function saveColumns() {
-    if (columnSaveTimer) clearTimeout(columnSaveTimer);
-    columnSaveTimer = setTimeout(() => {
-      columnSaveTimer = undefined;
-      void saveClientState(SEARCH_COLUMNS_KEY, $state.snapshot(columnPrefs));
-    }, 250);
-  }
-
   function columnWidth(id: string): number {
-    const def = SEARCH_COLUMNS.find((column) => column.id === id)!;
-    return Math.max(columnPrefs.sizing[id] ?? def.defWidth, def.min);
+    return layout.widthOf(id);
   }
 
   function columnStyle(id: string): string {
@@ -127,20 +89,13 @@
 
   function openColumnMenu(e: MouseEvent) {
     e.preventDefault();
-    const visibleCount = columns.length;
+    const canHide = layout.visibleIds().length > 1;
     columnMenuItems = SEARCH_COLUMNS.map((def) => {
-      const shown = columnPrefs.visibility[def.id] !== false;
+      const shown = layout.prefs.visibility[def.id] !== false;
       return {
         label: (shown ? "✓ " : "   ") + def.label,
-        disabled: shown && visibleCount <= 1,
-        action: () => {
-          if (shown && visibleCount <= 1) return;
-          columnPrefs = {
-            ...columnPrefs,
-            visibility: { ...columnPrefs.visibility, [def.id]: !shown },
-          };
-          saveColumns();
-        },
+        disabled: shown && !canHide,
+        action: () => layout.toggleVisibility(def.id),
       };
     });
     columnMenu = { x: e.clientX, y: e.clientY };
@@ -149,7 +104,7 @@
   $effect(() => {
     const el = resultsEl;
     if (!el) return;
-    const run = () => untrack(() => fitSearchToWidth(el.clientWidth));
+    const run = () => untrack(() => layout.fitToWidth(el.clientWidth));
     const observer = new ResizeObserver(run);
     observer.observe(el);
     run();
@@ -157,8 +112,7 @@
   });
 
   async function loadSearchColumns() {
-    const stored = await loadClientState<unknown>(SEARCH_COLUMNS_KEY);
-    columnPrefs = normalizeColumnPrefs(SEARCH_COLUMNS, stored);
+    await layout.load();
   }
 
   function startColumnResize(e: PointerEvent, def: TableColumnDef) {
@@ -167,16 +121,11 @@
     const startX = e.clientX;
     const startWidth = columnWidth(def.id);
     function move(event: PointerEvent) {
-      const width = Math.max(def.min, startWidth + event.clientX - startX);
-      columnPrefs = {
-        ...columnPrefs,
-        sizing: { ...columnPrefs.sizing, [def.id]: width },
-      };
+      layout.setWidth(def.id, startWidth + event.clientX - startX);
     }
     function up() {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      saveColumns();
     }
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -325,7 +274,11 @@
   onMount(() => {
     const handler = () => void doSearch();
     window.addEventListener("vide:online-search", handler);
-    return () => window.removeEventListener("vide:online-search", handler);
+    return () => {
+      window.removeEventListener("vide:online-search", handler);
+      // Persist a pending column-width change before leaving the page.
+      layout.flush();
+    };
   });
 
   onMount(async () => {
@@ -596,13 +549,6 @@
     searchPage.page = Math.max(1, Math.min(totalPages, next));
   }
 
-  function formatDuration(seconds?: number): string {
-    if (!seconds || seconds <= 0) return "";
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return m + ":" + s.toString().padStart(2, "0");
-  }
-
   $effect(() => {
     const q = $page.url.searchParams.get("q");
     if (q !== null && q !== searchPage.query) {
@@ -798,7 +744,7 @@
   .tab {
     padding: 6px 10px;
     font-size: 13px;
-    color: var(--color-base-content) / 0.65;
+    color: color-mix(in oklch, var(--color-base-content) 65%, transparent);
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
@@ -837,7 +783,7 @@
   }
 
   .inline-icon {
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
   }
 
   .inline-input input {
@@ -866,8 +812,8 @@
   .action-error {
     padding: 6px 10px;
     border-radius: 6px;
-    background: var(--color-error) / 0.1;
-    border: 1px solid var(--color-error) / 0.25;
+    background: color-mix(in oklch, var(--color-error) 10%, transparent);
+    border: 1px solid color-mix(in oklch, var(--color-error) 25%, transparent);
     color: var(--color-error);
     font-size: 11px;
   }
@@ -890,7 +836,7 @@
   .clear-all {
     margin-left: auto;
     font-size: 11px;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     background: none;
     border: none;
   }
@@ -913,7 +859,7 @@
   .chip {
     padding: 7px 12px;
     font-size: 12.5px;
-    color: var(--color-base-content) / 0.9;
+    color: color-mix(in oklch, var(--color-base-content) 90%, transparent);
     background: none;
     border: none;
     max-width: 180px;
@@ -931,7 +877,7 @@
     align-items: center;
     justify-content: center;
     width: 22px;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     background: none;
     border: none;
   }
@@ -957,7 +903,7 @@
     display: flex;
     align-items: center;
     font-size: 11px;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     overflow: hidden;
   }
 
@@ -976,7 +922,7 @@
     border: 1px solid var(--panel-border);
     border-radius: 4px;
     background: var(--color-base-200);
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
     font-size: 12px;
     padding: 0 6px;
     cursor: pointer;
@@ -1000,7 +946,7 @@
     border-bottom: 1px solid var(--color-base-300);
     font-size: 11px;
     font-weight: 600;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     user-select: none;
@@ -1011,24 +957,24 @@
   .th-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .resize-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 3; touch-action: none; }
   .resize-handle::after { content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px; width: 1px; background: transparent; }
-  .resize-handle:hover::after { background: var(--color-primary) / 0.6; }
+  .resize-handle:hover::after { background: color-mix(in oklch, var(--color-primary) 60%, transparent); }
   .col-filler { flex: 1 1 0; min-width: 0; }
   .song-row { display: flex; align-items: center; height: 36px; min-width: 0; color: var(--color-base-content); font-size: 13px; cursor: pointer; transition: background .1s; border-radius: 0; }
-  .song-row:hover { background: var(--color-base-300) / 0.7; }
-  .song-row.playing { background: var(--color-primary) / 0.12; }
+  .song-row:hover { background: color-mix(in oklch, var(--color-base-300) 70%, transparent); }
+  .song-row.playing { background: color-mix(in oklch, var(--color-primary) 12%, transparent); }
   .song-row.playing .name-text { color: var(--color-primary); }
   .td { display: flex; align-items: center; padding: 0 8px; min-width: 0; user-select: text; overflow: hidden; }
-  .cell-num { color: var(--color-base-content) / 0.5; font-size: 12px; }
+  .cell-num { color: color-mix(in oklch, var(--color-base-content) 50%, transparent); font-size: 12px; }
   .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
   .row-cover { width: 30px; height: 30px; border-radius: 3px; object-fit: cover; }
   .name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
   .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tag-badge { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--color-primary) / 0.15; color: var(--color-primary); }
+  .tag-badge { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in oklch, var(--color-primary) 15%, transparent); color: var(--color-primary); }
   .tag-cell { width: 100%; min-width: 0; display: flex; align-items: center; gap: 3px; overflow: hidden; white-space: nowrap; }
-  .tag-pill { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; font-size: 10px; line-height: 1.5; padding: 1px 5px; border-radius: 999px; background: var(--color-base-300); color: var(--color-base-content) / 0.7; }
+  .tag-pill { flex: none; max-width: 180px; overflow: hidden; text-overflow: ellipsis; font-size: 10px; line-height: 1.5; padding: 1px 5px; border-radius: 999px; background: var(--color-base-300); color: color-mix(in oklch, var(--color-base-content) 70%, transparent); }
   .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cell-time { color: var(--color-base-content) / 0.6; font-size: 12px; }
-  .column-btn { border: 1px solid var(--panel-border); border-radius: 4px; background: var(--color-base-200); color: var(--color-base-content) / 0.6; font-size: 12px; padding: 0 6px; margin: 4px; cursor: pointer; }
+  .cell-time { color: color-mix(in oklch, var(--color-base-content) 60%, transparent); font-size: 12px; }
+  .column-btn { border: 1px solid var(--panel-border); border-radius: 4px; background: var(--color-base-200); color: color-mix(in oklch, var(--color-base-content) 60%, transparent); font-size: 12px; padding: 0 6px; margin: 4px; cursor: pointer; }
 
   .result-header {
     display: flex;
@@ -1036,7 +982,7 @@
     height: 28px;
     padding: 0 8px;
     border-bottom: 1px solid var(--color-base-300);
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     font-size: 11px;
   }
 
@@ -1051,11 +997,11 @@
   }
 
   .result-row:hover {
-    background: var(--color-base-300) / 0.7;
+    background: color-mix(in oklch, var(--color-base-300) 70%, transparent);
   }
 
   .result-row.playing {
-    background: var(--color-primary) / 0.12;
+    background: color-mix(in oklch, var(--color-primary) 12%, transparent);
   }
 
   .result-row.playing .res-title {
@@ -1064,7 +1010,7 @@
 
   .res-index {
     width: 34px;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     font-size: 12px;
     text-align: center;
     flex: none;
@@ -1098,27 +1044,27 @@
     font-size: 10px;
     padding: 1px 5px;
     border-radius: 4px;
-    background: var(--color-primary) / 0.15;
+    background: color-mix(in oklch, var(--color-primary) 15%, transparent);
     color: var(--color-primary);
   }
 
   .res-artist {
     flex: 1.5;
     font-size: 13px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
   }
 
   .res-album {
     flex: 1.5;
     font-size: 13px;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   }
 
   .res-duration {
     width: 70px;
     text-align: right;
     font-size: 12px;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   }
 
   .res-action {
@@ -1136,7 +1082,7 @@
 
   .page-label {
     font-size: 12px;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   }
 
   .page-btn {
@@ -1144,7 +1090,7 @@
     border: 1px solid var(--color-base-300);
     border-radius: 5px;
     background: var(--color-base-200);
-    color: var(--color-base-content) / 0.8;
+    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
     font-size: 12px;
   }
 
@@ -1166,7 +1112,7 @@
     border-radius: 5px;
     background: none;
     border: none;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   }
 
   .row-btn:hover {
@@ -1181,7 +1127,7 @@
     align-items: center;
     justify-content: center;
     gap: 10px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
 
   .empty-icon {
@@ -1212,8 +1158,8 @@
     box-shadow: var(--shadow-lg);
   }
   .download-dialog h3 { margin: 0; font-size: 14px; }
-  .download-title { margin: 0; font-size: 12px; color: var(--color-base-content) / 0.7; }
-  .download-label { font-size: 11px; color: var(--color-base-content) / 0.6; }
+  .download-title { margin: 0; font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 70%, transparent); }
+  .download-label { font-size: 11px; color: color-mix(in oklch, var(--color-base-content) 60%, transparent); }
   .download-input {
     width: 100%; box-sizing: border-box;
     padding: 6px 9px;
@@ -1231,7 +1177,7 @@
   .download-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
   .download-actions button {
     padding: 5px 10px; border-radius: 5px; border: 1px solid var(--panel-border);
-    background: var(--color-base-100); color: var(--color-base-content) / 0.8;
+    background: var(--color-base-100); color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
     font-size: 12px;
   }
   .download-actions button:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }

@@ -362,20 +362,22 @@
     <div class="setting-card">
       <table class="table table-sm settings-table">
         <tbody>
-          <tr>
-            <th class="setting-label" scope="row">窗口缩放</th>
-            <td class="setting-control">
-              <input
-                type="number"
-                min="50"
-                max="200"
-                step="5"
-                value={settingsStore.settings.window_scale}
-                onchange={(e) => setNumber("window_scale", (e.currentTarget as HTMLInputElement).value)}
-                class="num-input"
-              />
-            </td>
-          </tr>
+          {#if isTauri}
+            <tr>
+              <th class="setting-label" scope="row">窗口缩放</th>
+              <td class="setting-control">
+                <input
+                  type="number"
+                  min="50"
+                  max="200"
+                  step="5"
+                  value={settingsStore.settings.window_scale}
+                  onchange={(e) => setNumber("window_scale", (e.currentTarget as HTMLInputElement).value)}
+                  class="num-input"
+                />
+              </td>
+            </tr>
+          {/if}
           <tr>
             <th class="setting-label" scope="row">主题色</th>
             <td class="setting-control">
@@ -802,7 +804,7 @@
     display: flex;
     justify-content: space-between;
   }
-  .group-desc { font-size: 11px; color: var(--color-base-content) / 0.6; margin-bottom: 4px; }
+  .group-desc { font-size: 11px; color: color-mix(in oklch, var(--color-base-content) 60%, transparent); margin-bottom: 4px; }
 
   .setting-card {
     background: var(--color-base-200);
@@ -853,7 +855,7 @@
     text-align: left;
     font-size: 11px;
     font-weight: 600;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     padding: 8px 6px;
     border-bottom: 1px solid var(--panel-border);
   }
@@ -873,7 +875,7 @@
 
   .sc-hint {
     font-size: 11px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     line-height: 1.6;
     padding: 6px 0 2px;
   }
@@ -911,7 +913,7 @@
   }
 
   .editor-label {
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     padding: 8px 2px 2px;
   }
 
@@ -927,7 +929,7 @@
     text-align: left;
     font-size: 11px;
     font-weight: 600;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     padding: 8px 6px;
     border-bottom: 1px solid var(--panel-border);
   }
@@ -947,7 +949,7 @@
     white-space: nowrap;
   }
   .cache-action { width: 34%; text-align: center; }
-  .cache-empty { text-align: center; color: var(--color-base-content) / 0.5; }
+  .cache-empty { text-align: center; color: color-mix(in oklch, var(--color-base-content) 50%, transparent); }
 
   .clear-btn {
     padding: 4px 12px;
@@ -968,7 +970,7 @@
   .checkbox-row span { flex: 1; }
 
   .radio-group { display: flex; gap: 10px; }
-  .radio-opt { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; color: var(--color-base-content) / 0.8; }
+  .radio-opt { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; color: color-mix(in oklch, var(--color-base-content) 80%, transparent); }
   .radio-opt input { accent-color: var(--color-primary); }
 
   .num-input {
@@ -1030,10 +1032,10 @@
     border-color: var(--color-primary);
   }
   .root-list { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
-  .root-empty { font-size: 12px; color: var(--color-base-content) / 0.5; }
+  .root-empty { font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 50%, transparent); }
   .root-item {
     display: flex; align-items: center; gap: 6px;
-    font-size: 12px; color: var(--color-base-content) / 0.85;
+    font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 85%, transparent);
     font-family: monospace; user-select: text;
     padding: 2px 0;
   }
@@ -1041,7 +1043,7 @@
   .root-btn {
     flex: none; display: flex; align-items: center; justify-content: center;
     width: 22px; height: 22px; border-radius: 4px;
-    background: none; border: none; color: var(--color-base-content) / 0.5;
+    background: none; border: none; color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
   }
   .root-btn:hover { background: var(--color-base-300); color: var(--color-base-content); }
   .root-btn.ok { color: var(--color-success); }
@@ -1054,7 +1056,7 @@
 
   .btn-group { display: flex; align-items: center; gap: 6px; }
 
-  .scan-result { font-size: 11px; color: var(--color-base-content) / 0.7; padding: 6px 0; }
+  .scan-result { font-size: 11px; color: color-mix(in oklch, var(--color-base-content) 70%, transparent); padding: 6px 0; }
 
   .btn-row.inline { display: flex; flex-wrap: wrap; gap: 8px; }
   .hidden-file { display: none; }

@@ -119,15 +119,15 @@
   .remote-form input { flex: 1 1 220px; padding: 6px 9px; border: 1px solid var(--color-base-300); border-radius: 5px; background: var(--color-base-100); color: inherit; font: inherit; }
   .remote-form input:focus { outline: none; border-color: var(--color-primary); }
   .remote-current { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
-  .playback-target { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--color-base-content) / 0.7; }
+  .playback-target { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; color: color-mix(in oklch, var(--color-base-content) 70%, transparent); }
   .playback-target label { display: inline-flex; align-items: center; gap: 4px; }
   .playback-target input { accent-color: var(--color-primary); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success); }
-  .remote-url { font-family: var(--font-mono, monospace); font-size: 11px; color: var(--color-base-content) / 0.75; }
+  .remote-url { font-family: var(--font-mono, monospace); font-size: 11px; color: color-mix(in oklch, var(--color-base-content) 75%, transparent); }
   .btn-secondary { display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border: 1px solid var(--panel-border); border-radius: 5px; background: var(--color-base-100); color: inherit; font: inherit; font-size: 11px; cursor: pointer; }
   .btn-secondary:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
   .btn-secondary:disabled { opacity: 0.5; }
-  .hint { margin: 0; font-size: 11px; line-height: 1.5; color: var(--color-base-content) / 0.55; }
+  .hint { margin: 0; font-size: 11px; line-height: 1.5; color: color-mix(in oklch, var(--color-base-content) 55%, transparent); }
   .error { margin: 0; font-size: 11px; color: var(--color-error); overflow-wrap: anywhere; }
   .spin { animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

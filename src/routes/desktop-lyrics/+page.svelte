@@ -13,8 +13,12 @@
   import LyricsView from "$lib/components/lyrics/LyricsView.svelte";
   import { parseLyrics, type LyricLine } from "$lib/lyrics";
   import { saveClientState } from "$lib/clientState";
+  import { isTauri } from "$lib/isTauri";
+  import { goto } from "$app/navigation";
 
-  const appWindow: Window = getCurrentWindow();
+  // Only the Tauri lyrics window may load this route; on the web it is
+  // unreachable except by typing the URL, so send the user back to the app.
+  const appWindow = (isTauri ? getCurrentWindow() : null) as Window;
 
   let lines = $state<LyricLine[]>([]);
   let rawLyrics = $state<string | null>(null);
@@ -63,6 +67,10 @@
 
   // The desktop window has no player bar, so it polls the backend itself.
   onMount(() => {
+    if (!isTauri) {
+      void goto("/");
+      return;
+    }
     void settingsStore.load();
     void player.poll();
     const timer = setInterval(() => void player.poll(), 500);

@@ -369,7 +369,7 @@
   .q-icon {
     display: flex;
     flex: none;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
   }
 
 
@@ -383,7 +383,7 @@
     border-radius: 4px;
     background: none;
     border: none;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
   .q-btn:hover {
     background: var(--color-base-300);
@@ -433,14 +433,14 @@
   .drop-fields-label {
     margin-right: 2px;
     font-size: 10px;
-    color: var(--color-base-content) / 0.45;
+    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
   }
   .field-chip {
     padding: 1px 6px;
     border-radius: 4px;
     background: var(--color-base-100);
     border: 1px solid var(--panel-border);
-    color: var(--color-base-content) / 0.72;
+    color: color-mix(in oklch, var(--color-base-content) 72%, transparent);
     font-size: 10.5px;
     line-height: 1.5;
   }
@@ -455,7 +455,7 @@
     gap: 6px;
     padding: 5px 8px;
     font-size: 11px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
 
   .drop-clear {
@@ -463,7 +463,7 @@
     padding: 1px 4px;
     background: none;
     border: none;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     font-size: 11px;
   }
   .drop-clear:hover {
@@ -491,7 +491,7 @@
     font-size: 12.5px;
   }
   .drop-main:hover {
-    background: var(--color-primary) / 0.12;
+    background: color-mix(in oklch, var(--color-primary) 12%, transparent);
   }
   .drop-main.history {
     display: block;
@@ -513,7 +513,7 @@
   }
   .row-query {
     font-size: 10.5px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
 
   .row-del,
@@ -528,7 +528,7 @@
     border-radius: 4px;
     background: none;
     border: none;
-    color: var(--color-base-content) / 0.4;
+    color: color-mix(in oklch, var(--color-base-content) 40%, transparent);
   }
   .row-del:hover {
     color: var(--color-error);
@@ -545,7 +545,7 @@
   .drop-empty {
     padding: 8px;
     font-size: 11px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     text-align: center;
   }
 </style>

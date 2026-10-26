@@ -121,13 +121,13 @@ export const DEFAULT_DETAIL_LYRICS_CSS = `/* 歌词区域 DOM 结构（与悬浮
   margin: 0;
   font-size: 14px;
   line-height: 1.6;
-  color: var(--color-base-content) / 0.6;
+  color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   transition: 0.2s;
 }
 
 /* 同一时间的多行：lyric-1、lyric-2、lyric-3… 按出现顺序 */
-.line .lyric-1 { color: var(--color-base-content) / 0.85; }
-.line .lyric-2 { color: var(--color-base-content) / 0.6; }
+.line .lyric-1 { color: color-mix(in oklch, var(--color-base-content) 85%, transparent); }
+.line .lyric-2 { color: color-mix(in oklch, var(--color-base-content) 60%, transparent); }
 
 .playing p {
   font-size: 16px;
@@ -251,4 +251,26 @@ export function scrollActiveLineIntoView(
   } else {
     viewport.scrollTop = top;
   }
+}
+
+/* ── Stylesheet compatibility ─────────────────────────── */
+
+const LEGACY_ALPHA = /var\((--[\w-]+)\)\s*\/\s*([0-9.]+)/g;
+
+/**
+ * Older default stylesheets (and hand-written user CSS) used the invalid
+ * `var(--x) / 0.6` opacity syntax, which browsers drop entirely. Rewrite it to
+ * `color-mix` when injecting, without touching the text the user stored or is
+ * editing.
+ */
+export function normalizeCssColors(css: string): string {
+  return css.replace(
+    LEGACY_ALPHA,
+    (_match, variable: string, alpha: string) =>
+      "color-mix(in oklch, var(" +
+      variable +
+      ") " +
+      Math.round(parseFloat(alpha) * 1000) / 10 +
+      "%, transparent)",
+  );
 }

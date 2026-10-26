@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SongDetails } from "$lib/types";
+  import { displayAlbum, displayArtist, displayTitle, formatDuration } from "$lib/songDisplay";
 
   let {
     details,
@@ -46,13 +47,6 @@
     return value.toFixed(digits) + units[index];
   }
 
-  function formatDuration(seconds?: number): string {
-    if (!seconds || seconds <= 0) return "—";
-    const minutes = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return minutes + ":" + secs.toString().padStart(2, "0");
-  }
-
   function formatDate(unixSeconds?: number): string {
     if (!unixSeconds) return "—";
     const date = new Date(unixSeconds * 1000);
@@ -60,9 +54,9 @@
   }
 
   let song = $derived(details.song);
-  let title = $derived(song.metadata.display_title ?? song.title);
-  let artist = $derived(song.metadata.artist_override ?? song.artist);
-  let album = $derived(song.metadata.album_override ?? song.album);
+  let title = $derived(displayTitle(song));
+  let artist = $derived(displayArtist(song));
+  let album = $derived(displayAlbum(song));
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -92,7 +86,7 @@
               {#if file.sample_rate != null}<span>{file.sample_rate} Hz</span>{/if}
               {#if file.channels != null}<span>{file.channels} ch</span>{/if}
               {#if file.bit_depth != null}<span>{file.bit_depth} bit</span>{/if}
-              {#if file.duration != null}<span>{formatDuration(file.duration)}</span>{/if}
+              {#if file.duration != null}<span>{formatDuration(file.duration) || "—"}</span>{/if}
               {#if file.modified != null}<span>{formatDate(file.modified)}</span>{/if}
             {/if}
           </div>
@@ -129,7 +123,7 @@
     <div class="kv"><span>原始标题</span><b>{song.title}</b></div>
     <div class="kv"><span>原始艺术家</span><b>{song.artist}</b></div>
     <div class="kv"><span>原始专辑</span><b>{song.album}</b></div>
-    <div class="kv"><span>时长</span><b>{formatDuration(song.metadata.duration)}</b></div>
+    <div class="kv"><span>时长</span><b>{formatDuration(song.metadata.duration) || "—"}</b></div>
     <div class="kv"><span>添加时间</span><b>{song.metadata.added_time || "—"}</b></div>
     <div class="kv"><span>文件名</span><b>{song.metadata.file_name || "—"}</b></div>
     {#if song.metadata.display_title}
@@ -178,7 +172,7 @@
     margin-top: 2px;
     font-size: 11px;
     line-height: 1.4;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
     overflow-wrap: anywhere;
   }
   .sep { margin: 0 5px; }
@@ -202,7 +196,7 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 10.5px;
     word-break: break-all;
-    color: var(--color-base-content) / 0.8;
+    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
   }
   .file-meta {
     display: flex;
@@ -210,7 +204,7 @@
     gap: 4px 10px;
     margin-top: 2px;
     font-size: 10.5px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
   .bad { color: var(--color-error); }
 
@@ -218,7 +212,7 @@
   .chip {
     padding: 1px 6px;
     border-radius: 4px;
-    background: var(--color-primary) / 0.14;
+    background: color-mix(in oklch, var(--color-primary) 14%, transparent);
     color: var(--color-primary);
     font-size: 10.5px;
   }
@@ -231,7 +225,7 @@
   .kv span {
     flex: none;
     width: 72px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
   .kv b {
     flex: 1;

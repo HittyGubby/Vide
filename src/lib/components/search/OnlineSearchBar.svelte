@@ -33,7 +33,7 @@
     border-radius: 5px;
     background: var(--color-base-200);
   }
-  .icon { flex: none; color: var(--color-base-content) / 0.5; }
+  .icon { flex: none; color: color-mix(in oklch, var(--color-base-content) 50%, transparent); }
   input { flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 12px; outline: none; }
   button { flex: none; border: 0; background: transparent; color: var(--color-primary); font: inherit; font-size: 11px; cursor: pointer; }
   button:disabled { opacity: .4; }

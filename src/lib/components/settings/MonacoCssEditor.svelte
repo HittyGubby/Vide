@@ -99,7 +99,7 @@
   }
   .monaco-note {
     font-size: 12px;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     padding: 6px 2px;
   }
   .monaco-note.error { color: var(--color-error, #f87171); }

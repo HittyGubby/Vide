@@ -131,7 +131,10 @@ pub async fn scan_root(
                 };
 
                 if metadata.added_time.is_none() {
-                    metadata.added_time = Some(crate::infra::time::now_date());
+                    metadata.added_time = Some(
+                        crate::infra::time::timestamp_from_path(&path)
+                            .unwrap_or_else(crate::infra::time::now_timestamp),
+                    );
                 }
 
                 let title = metadata

@@ -22,6 +22,12 @@
   import { loadCoverWithFallback } from "$lib/cover";
   import { isTauri } from "$lib/isTauri";
   import { canManage } from "$lib/stores/auth.svelte";
+  import { formatTime } from "$lib/songDisplay";
+  import {
+    activeLyricIndex as activeLineIndex,
+    parseLrc,
+    type LyricLine,
+  } from "$lib/lyrics";
 
   // Tag editor for the currently playing song
   let tagSong = $state<Song | null>(null);
@@ -61,13 +67,6 @@
     await player.seekTo(targetSecs);
   }
 
-  function formatTime(secs: number): string {
-    if (!secs || secs <= 0) return "0:00";
-    const m = Math.floor(secs / 60);
-    const s = Math.floor(secs % 60);
-    return m + ":" + s.toString().padStart(2, "0");
-  }
-
   let currentTime = $derived(formatTime(player.elapsed));
   let totalTime = $derived(formatTime(player.duration));
 
@@ -87,55 +86,29 @@
   }
 
   // ── Lyrics line (bottom-left) ────────────────────
-  let lyricsLine = $state<string | null>(null);
-  let lyrics = $state<{ t: number; text: string }[]>([]);
+  // Parsed with the shared LRC parser so the player bar, the detail view and
+  // the floating window can never disagree about what is playing.
+  let lyrics = $state<LyricLine[]>([]);
 
   $effect(() => {
     const id = player.mediaId;
     if (!id) {
       lyrics = [];
-      lyricsLine = null;
       return;
     }
     invoke<string | null>("get_lyrics", { songId: id })
       .then((raw) => {
-        if (!raw) {
-          lyrics = [];
-          lyricsLine = null;
-          return;
-        }
-        const parsed = parseLrc(raw);
-        lyrics = parsed;
+        lyrics = raw ? parseLrc(raw) : [];
       })
       .catch(() => {
         lyrics = [];
-        lyricsLine = null;
       });
   });
 
-  function parseLrc(raw: string): { t: number; text: string }[] {
-    const out: { t: number; text: string }[] = [];
-    for (const line of raw.split("\n")) {
-      const m = line.match(/\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)/);
-      if (m) {
-        const t = parseInt(m[1]) * 60 + parseFloat(m[2]);
-        out.push({ t, text: m[3] || "" });
-      }
-    }
-    out.sort((a, b) => a.t - b.t);
-    return out;
-  }
-
-  let activeLyric = $derived.by(() => {
-    if (lyrics.length === 0) return null;
-    const el = player.elapsed;
-    let cur: string | null = null;
-    for (const l of lyrics) {
-      if (l.t <= el) cur = l.text;
-      else break;
-    }
-    return cur;
-  });
+  let activeIndex = $derived(activeLineIndex(lyrics, player.elapsed));
+  let activeLyric = $derived(
+    activeIndex >= 0 ? lyrics[activeIndex].parts.map((part) => part.text).join(" / ") : null,
+  );
 
   // Subtitle: current lyric line, else artist (Unknown shown as empty).
   let subtitle = $derived(
@@ -283,7 +256,7 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
     cursor: pointer;
     overflow: hidden;
     border: none;
@@ -309,7 +282,7 @@
 
   .info-sub {
     font-size: 11px;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
     height: 14px;
     display: flex;
     align-items: center;
@@ -324,12 +297,12 @@
 
   .time-badge, .time-total {
     font-size: 12px;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
     font-variant-numeric: tabular-nums;
     min-width: 34px;
     text-align: center;
   }
-  .time-sep { color: var(--color-base-content) / 0.4; margin: 0 2px; }
+  .time-sep { color: color-mix(in oklch, var(--color-base-content) 40%, transparent); margin: 0 2px; }
 
   .player-tools {
     display: flex;
@@ -344,7 +317,7 @@
     width: 30px;
     height: 30px;
     border-radius: 6px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     background: none;
     border: none;
     transition: background 0.15s, color 0.15s;

@@ -88,7 +88,7 @@
   .modal { width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 16px; border-radius: 10px; background: var(--color-base-200); border: 1px solid var(--panel-border); }
   .head { display: flex; align-items: center; justify-content: space-between; }
   h2 { margin: 0; font-size: 15px; }
-  .hint { margin: 0; font-size: 11px; color: var(--color-base-content) / 0.55; }
+  .hint { margin: 0; font-size: 11px; color: color-mix(in oklch, var(--color-base-content) 55%, transparent); }
   textarea { resize: vertical; min-height: 90px; padding: 6px 8px; border: 1px solid var(--panel-border); border-radius: 5px; background: var(--color-base-100); color: inherit; font: inherit; font-size: 12px; }
   textarea:focus { outline: none; border-color: var(--color-primary); }
   .icon { border: 0; background: none; color: inherit; cursor: pointer; }

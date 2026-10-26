@@ -2,6 +2,7 @@
   import { settingsStore } from "$lib/stores/settings.svelte";
   import {
     activeLyricIndex,
+    normalizeCssColors,
     scrollActiveLineIntoView,
     type LyricLine,
   } from "$lib/lyrics";
@@ -92,7 +93,7 @@
 
 <!-- The stylesheet is injected globally on purpose: the same string is edited
      in the settings and applied here, wherever this component is used. -->
-{@html "<style>" + css + "</style>"}
+{@html "<style>" + normalizeCssColors(css) + "</style>"}
 
 <div class="lyrics-root" data-position={resolvedPosition}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->

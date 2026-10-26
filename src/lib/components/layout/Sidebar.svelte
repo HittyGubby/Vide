@@ -88,7 +88,7 @@
     width: 44px;
     height: 48px;
     border-radius: 8px;
-    color: var(--color-base-content) / 0.65;
+    color: color-mix(in oklch, var(--color-base-content) 65%, transparent);
     background: none;
     border: none;
     transition: background 0.15s, color 0.15s;
@@ -101,7 +101,7 @@
 
   .nav-btn.active {
     color: var(--color-primary);
-    background: var(--color-primary) / 0.12;
+    background: color-mix(in oklch, var(--color-primary) 12%, transparent);
   }
 
   .nav-label {

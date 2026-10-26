@@ -70,7 +70,7 @@
     width: 30px;
     height: 30px;
     border-radius: 6px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     background: none;
     border: none;
     transition: background 0.15s, color 0.15s;
@@ -118,7 +118,7 @@
     align-items: center;
     gap: 4px;
     font-size: 11px;
-    color: var(--color-base-content) / 0.75;
+    color: color-mix(in oklch, var(--color-base-content) 75%, transparent);
     cursor: pointer;
   }
 

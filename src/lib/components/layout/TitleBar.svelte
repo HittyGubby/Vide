@@ -136,7 +136,7 @@
     gap: 4px;
     height: 100%;
     padding: 0 10px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     background: none;
     border: none;
     font-size: 12px;
@@ -158,7 +158,7 @@
     justify-content: center;
     width: 40px;
     height: 100%;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     background: none;
     border: none;
   }

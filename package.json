@@ -19,7 +19,6 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
-    "@tanstack/svelte-table": "^9.2.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.8.3",
     "@tauri-apps/plugin-global-shortcut": "^2.3.2",

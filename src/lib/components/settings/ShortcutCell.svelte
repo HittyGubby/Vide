@@ -71,7 +71,7 @@
   }
   .sc-cell.capturing {
     border-color: var(--color-primary);
-    background: var(--color-primary) / 0.12;
+    background: color-mix(in oklch, var(--color-primary) 12%, transparent);
     color: var(--color-primary);
   }
 </style>

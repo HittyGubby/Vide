@@ -1,13 +1,6 @@
 <script lang="ts">
-  import type { ComponentType } from "svelte";
-
-  export interface MenuItem {
-    label: string;
-    icon?: ComponentType;
-    action: () => void;
-    disabled?: boolean;
-    divider?: boolean;
-  }
+  import MenuList from "$lib/ui/MenuList.svelte";
+  import type { MenuItem } from "$lib/ui/menu";
 
   let {
     items,
@@ -54,23 +47,7 @@
   role="menu"
   onkeydown={(e) => { if (e.key === "Escape") onclose(); }}
 >
-  {#each items as item}
-    {#if item.divider}
-      <div class="divider" role="separator"></div>
-    {:else}
-      <button
-        class="menu-item"
-        disabled={item.disabled}
-        onclick={() => { item.action(); onclose(); }}
-        role="menuitem"
-      >
-        {#if item.icon}
-          <span class="menu-icon"><svelte:component this={item.icon} size={15} /></span>
-        {/if}
-        <span class="menu-label">{item.label}</span>
-      </button>
-    {/if}
-  {/each}
+  <MenuList {items} onselect={onclose} />
 </div>
 
 <style>
@@ -92,53 +69,5 @@
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
     padding: 4px;
     overflow: hidden;
-  }
-
-  .menu-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 6px 10px;
-    border-radius: 5px;
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    font-size: 12.5px;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .menu-item:hover:not(:disabled) {
-    background: var(--accent-surface);
-    color: var(--accent-primary);
-  }
-
-  .menu-item:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-
-  .menu-icon {
-    display: flex;
-    align-items: center;
-    width: 18px;
-    justify-content: center;
-    color: var(--text-tertiary);
-    flex-shrink: 0;
-  }
-
-  .menu-item:hover .menu-icon {
-    color: var(--accent-primary);
-  }
-
-  .menu-label {
-    flex: 1;
-  }
-
-  .divider {
-    height: 1px;
-    background: var(--border-subtle);
-    margin: 4px 8px;
   }
 </style>

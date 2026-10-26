@@ -460,7 +460,11 @@ async fn download_song(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
-    require_session(&state, &headers, None)?;
+    // Downloading is reading: guests may fetch the file when the server
+    // exposes media publicly, the same rule that gates streaming.
+    if !state.public_media {
+        require_session(&state, &headers, None)?;
+    }
     let song = state
         .app
         .db
@@ -960,7 +964,7 @@ async fn ensure_online_song(
                     song.metadata.duration = item.duration;
                 }
                 if song.metadata.added_time.is_none() {
-                    song.metadata.added_time = Some(crate::infra::time::now_date());
+                    song.metadata.added_time = Some(crate::infra::time::now_timestamp());
                 }
                 let _ = state.app.db.upsert_song(&song).await;
             }
@@ -985,7 +989,7 @@ async fn ensure_online_song(
         metadata: crate::models::SongMetadata {
             duration: item.duration,
             cover_url: item.cover_url.clone(),
-            added_time: Some(crate::infra::time::now_date()),
+            added_time: Some(crate::infra::time::now_timestamp()),
             ..Default::default()
         },
     };
@@ -1058,6 +1062,29 @@ async fn tag_history(State(state): State<ServerState>) -> Result<Json<Value>, St
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(json!(values)))
+}
+
+#[derive(Deserialize)]
+struct TagHistoryRemoveRequest {
+    namespace: String,
+    value: String,
+}
+
+async fn remove_tag_history(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<TagHistoryRemoveRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    audit(
+        &state,
+        "tag_history_remove",
+        &format!("{}:{}", request.namespace, request.value),
+    );
+    crate::features::tags::remove_tag_history(&state.app.db, &request.namespace, &request.value)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn namespaces(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
@@ -1633,6 +1660,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/tags", post(add_tag))
         .route("/api/v1/tags/remove", post(remove_tag))
         .route("/api/v1/tag-history", get(tag_history))
+        .route("/api/v1/tag-history/remove", post(remove_tag_history))
         .route("/api/v1/namespaces", get(namespaces))
         .route("/api/v1/meta-tags", get(meta_tags))
         .route("/api/v1/tag-values", get(tag_values))

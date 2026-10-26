@@ -682,16 +682,16 @@
     margin: 3px 0 0;
     font-size: 11px;
     line-height: 1.5;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
   .count {
     font-size: 11px;
-    color: var(--color-base-content) / 0.45;
+    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
   }
   .dir-line {
     margin: 0;
     font: 10px var(--font-mono, monospace);
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     overflow-wrap: anywhere;
   }
   .plugin-list {
@@ -738,7 +738,7 @@
   .version {
     flex: none;
     font-size: 10px;
-    color: var(--color-base-content) / 0.45;
+    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
   }
   .cap-row {
     display: flex;
@@ -754,7 +754,7 @@
     font-size: 10px;
     padding: 1px 6px;
     border-radius: 4px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
     background: var(--color-base-100);
     border: 1px solid var(--panel-border);
   }
@@ -763,13 +763,13 @@
     font-weight: 600;
   }
   .cap-value {
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
   .desc {
     flex: 1;
     min-width: 0;
     font-size: 10.5px;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -796,7 +796,7 @@
   .dir {
     margin: 0;
     font-size: 10px;
-    color: var(--color-base-content) / 0.45;
+    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
     font-family: var(--font-mono, monospace);
     overflow-wrap: anywhere;
   }
@@ -807,7 +807,7 @@
   }
   .field-label {
     font-size: 11px;
-    color: var(--color-base-content) / 0.6;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   }
   .field-head {
     display: flex;
@@ -815,7 +815,7 @@
     justify-content: space-between;
     gap: 8px;
     font-size: 11px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
   }
   .field-actions {
     display: flex;
@@ -848,7 +848,7 @@
     border-radius: 4px;
     border: 1px solid var(--panel-border);
     background: var(--color-base-100);
-    color: var(--color-base-content) / 0.8;
+    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
     font-size: 10.5px;
     line-height: 1.5;
     font-family: inherit;
@@ -863,11 +863,11 @@
     cursor: default;
   }
   .btn-mini.primary {
-    border-color: var(--color-primary) / 0.45;
+    border-color: color-mix(in oklch, var(--color-primary) 45%, transparent);
     color: var(--color-primary);
   }
   .muted {
-    color: var(--color-base-content) / 0.4;
+    color: color-mix(in oklch, var(--color-base-content) 40%, transparent);
   }
   .small {
     font-size: 10.5px;
@@ -879,7 +879,7 @@
     gap: 6px;
     padding: 14px;
     font-size: 11.5px;
-    color: var(--color-base-content) / 0.5;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
   }
   .notice {
     display: flex;
@@ -893,13 +893,13 @@
   }
   .notice.error {
     color: var(--color-error);
-    background: var(--color-error) / 0.1;
-    border: 1px solid var(--color-error) / 0.25;
+    background: color-mix(in oklch, var(--color-error) 10%, transparent);
+    border: 1px solid color-mix(in oklch, var(--color-error) 25%, transparent);
   }
   .notice.ok {
     color: var(--color-success);
-    background: var(--color-success) / 0.1;
-    border: 1px solid var(--color-success) / 0.25;
+    background: color-mix(in oklch, var(--color-success) 10%, transparent);
+    border: 1px solid color-mix(in oklch, var(--color-success) 25%, transparent);
   }
   .route-groups {
     display: flex;
@@ -933,7 +933,7 @@
     width: 125px;
     padding-top: 3px;
     font-size: 11px;
-    color: var(--color-base-content) / 0.7;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
   }
   .route-providers {
     flex: 1 1 220px;
@@ -963,7 +963,7 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--color-primary) / 0.15;
+    background: color-mix(in oklch, var(--color-primary) 15%, transparent);
     color: var(--color-primary);
     font-size: 9px;
     font-weight: 600;
@@ -985,22 +985,22 @@
     border: 0;
     border-radius: 3px;
     background: transparent;
-    color: var(--color-base-content) / 0.55;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
     font-size: 9px;
     font-family: inherit;
     cursor: pointer;
   }
   .mini-btn:hover:not(:disabled) {
-    background: var(--color-primary) / 0.15;
+    background: color-mix(in oklch, var(--color-primary) 15%, transparent);
     color: var(--color-primary);
   }
   .mini-btn.active {
     color: var(--color-primary);
-    background: var(--color-primary) / 0.15;
+    background: color-mix(in oklch, var(--color-primary) 15%, transparent);
   }
   .mini-btn.danger:hover:not(:disabled) {
     color: var(--color-error);
-    background: var(--color-error) / 0.12;
+    background: color-mix(in oklch, var(--color-error) 12%, transparent);
   }
   .mini-btn:disabled {
     opacity: 0.3;
@@ -1034,7 +1034,7 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font: 10px var(--font-mono, monospace);
-    color: var(--color-base-content) / 0.65;
+    color: color-mix(in oklch, var(--color-base-content) 65%, transparent);
     background: var(--color-base-100);
     border: 1px solid var(--panel-border);
     border-radius: 4px;
