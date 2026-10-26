@@ -4,6 +4,9 @@ import type { AppSettings, LyricsPosition } from "$lib/types";
 import { defaultShortcuts } from "$lib/shortcuts";
 import { DEFAULT_DESKTOP_LYRICS_CSS, DEFAULT_DETAIL_LYRICS_CSS } from "$lib/lyrics";
 import { applyAppearance, DEFAULT_PRIMARY } from "$lib/theme";
+import { isTauri } from "$lib/isTauri";
+import { auth } from "$lib/stores/auth.svelte";
+import { readGuestTheme, withGuestTheme, writeGuestTheme } from "$lib/themeGuest";
 
 class SettingsStore {
   settings = $state<AppSettings>({
@@ -16,6 +19,7 @@ class SettingsStore {
     desktop_lyrics_locked: false,
     desktop_lyrics_always_on_top: true,
     desktop_lyrics_position: "center" as LyricsPosition,
+    theme_mode: "dark",
     theme_primary: DEFAULT_PRIMARY,
     desktop_lyrics_css: DEFAULT_DESKTOP_LYRICS_CSS,
     detail_lyrics_css: DEFAULT_DETAIL_LYRICS_CSS,
@@ -28,6 +32,11 @@ class SettingsStore {
   /** Accelerators the OS refused to register (usually already taken). */
   globalShortcutFailures = $state<string[]>([]);
 
+  /** Guests cannot persist to SQLite; their theme lives in localStorage. */
+  private guestTheme(): boolean {
+    return !isTauri && !auth.authenticated;
+  }
+
   /** Load settings from the backend. */
   async load() {
     try {
@@ -35,6 +44,9 @@ class SettingsStore {
     } catch {
       /* keep defaults */
     } finally {
+      if (this.guestTheme() && readGuestTheme()) {
+        this.settings = withGuestTheme(this.settings);
+      }
       this.loaded = true;
       applyAppearance(this.settings);
     }
@@ -59,6 +71,16 @@ class SettingsStore {
   async update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     this.settings = { ...this.settings, [key]: value };
     applyAppearance(this.settings);
+
+    // Theme is pure presentation: keep it for guests without a server write.
+    if (this.guestTheme() && (key === "theme_mode" || key === "theme_primary")) {
+      writeGuestTheme({
+        mode: this.settings.theme_mode,
+        primary: this.settings.theme_primary,
+      });
+      return;
+    }
+
     await this.save();
   }
 }

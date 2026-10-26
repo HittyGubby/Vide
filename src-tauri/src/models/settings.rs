@@ -97,6 +97,9 @@ pub struct AppSettings {
     /// Where the active line rests: "top" / "center" / "bottom".
     #[serde(default = "default_lyrics_position")]
     pub desktop_lyrics_position: String,
+    /// "dark" or "light"; the web client stores guest choices locally.
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
     /// Accent colour (hex, e.g. "#5f5dfd") applied as the UI primary colour.
     #[serde(default = "default_theme_primary")]
     pub theme_primary: String,
@@ -139,6 +142,10 @@ fn default_lyrics_position() -> String {
 
 /// Starter stylesheet handed to the Monaco editor. It documents the lyrics DOM
 /// so users can see exactly which nodes they can style.
+fn default_theme_mode() -> String {
+    "dark".to_string()
+}
+
 fn default_theme_primary() -> String {
     "#5f5dfd".to_string()
 }
@@ -293,6 +300,7 @@ impl Default for AppSettings {
             desktop_lyrics_locked: false,
             desktop_lyrics_always_on_top: true,
             desktop_lyrics_position: default_lyrics_position(),
+            theme_mode: default_theme_mode(),
             theme_primary: default_theme_primary(),
             desktop_lyrics_css: default_desktop_lyrics_css(),
             detail_lyrics_css: default_detail_lyrics_css(),

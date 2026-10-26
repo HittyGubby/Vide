@@ -113,6 +113,7 @@ src/lib/
   - 只改 `songs.added_time` 一列即可（JSON 那份不参与读取）；
   - 过渡期副作用：新旧格式混排时 `ORDER BY added_time DESC` 会把新格式整体排在前面（新歌仍在最前），等值/上界查询会失配，修复后统一。
 - 显示：桌面悬浮卡、移动端详情面板。
+- **已执行（2026-10-26）**：`scripts/migrate-added-time.mjs` 迁移本机库 4298 行（1799 行用文件 mtime，2499 行用当日 00:00:00）；备份 `vide.db.bak-2026-10-26T14-09-08-985Z`。
 
 ### 7.2 tag 历史
 
@@ -138,6 +139,7 @@ src/lib/
 - 平板走桌面 UI；抽屉在左侧（登录、播放位置都在里面）。
 - 设置保持单页；移动端用 `?section=` 两级。
 - 下载对游客开放，权限跟随 `public_media`；编辑入口仍只对登录用户开放。
+- 外观：深浅色模式 + 主题色。游客（Web 未登录）存 localStorage（`vide.guest-theme`，`app.html` 内联脚本在首屏前应用）；本地/登录照常写 SQLite。
 - 封面：远端封面走服务端代理；本地文件的内嵌图尚未做（见 §10），当前退回大 V。
 - 不做 PWA/SW/离线/IDB；不补 manifest。
 - 依赖变化：删除 `monaco-editor`、`@tanstack/svelte-table`；新增 `codemirror`、`@codemirror/lang-css`、`@codemirror/theme-one-dark`。虚拟列表保留自研 `virtualSlice`，未引入 `@tanstack/svelte-virtual`。
@@ -146,5 +148,4 @@ src/lib/
 
 - 本地文件内嵌封面：`/api/v1/cover/:id`（服务端读 lofty picture）+ Tauri 命令/data URL；播放页与悬停卡使用。
 - 用 Lighthouse 复核移动端首屏；如需要再考虑 manifest（当前明确不做 PWA）。
-- 旧库 `added_time` 格式迁移：由用户单独处理（规范见 §7.1）。
 - 歌词首行的“居中”位置：短歌词时 `.lyrics-lines` 没有上下留白，active 行会停在顶部；如需要可加动态 padding。

@@ -52,6 +52,15 @@
   --scrollbar-track: transparent;
 }
 
+/* The bundled light theme uses the same legacy aliases; only the native
+   color-scheme and the shadow strength need adjusting. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.22);
+}
+
 /* ── Base ────────────────────────────────────────────── */
 html,
 body {

@@ -15,6 +15,10 @@
   async function setText(key: keyof AppSettings, value: string) {
     await settingsStore.update(key, value);
   }
+
+  async function setThemeMode(mode: "dark" | "light") {
+    await settingsStore.update("theme_mode", mode);
+  }
 </script>
 
 <SettingsGroup id="appearance" title="外观">
@@ -32,6 +36,21 @@
         />
       </SettingRow>
     {/if}
+
+    <SettingRow label="深浅色模式">
+      <div class="seg">
+        <button
+          class="seg-btn"
+          class:on={settingsStore.settings.theme_mode !== "light"}
+          onclick={() => void setThemeMode("dark")}
+        >深色</button>
+        <button
+          class="seg-btn"
+          class:on={settingsStore.settings.theme_mode === "light"}
+          onclick={() => void setThemeMode("light")}
+        >浅色</button>
+      </div>
+    </SettingRow>
 
     <SettingRow label="主题色">
       <div class="color-row">
@@ -87,6 +106,28 @@
   .text-input:focus {
     outline: none;
     border-color: var(--color-primary);
+  }
+
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--color-base-300);
+  }
+  .seg-btn {
+    padding: 4px 14px;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: color-mix(in oklch, var(--color-base-content) 65%, transparent);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .seg-btn.on {
+    background: var(--color-base-100);
+    color: var(--color-primary);
+    font-weight: 600;
   }
 
   .color-row {

@@ -4,7 +4,7 @@ import type { AppSettings } from "$lib/types";
 export const DEFAULT_PRIMARY = "#5f5dfd";
 
 /** Pick a readable foreground for a solid background colour. */
-function readableOn(hex: string): string {
+export function primaryContentFor(hex: string): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return "#ffffff";
   const n = parseInt(m[1], 16);
@@ -26,7 +26,14 @@ export function applyTheme(settings: AppSettings) {
   const primary = settings.theme_primary?.trim() || DEFAULT_PRIMARY;
   const root = document.documentElement;
   root.style.setProperty("--color-primary", primary);
-  root.style.setProperty("--color-primary-content", readableOn(primary));
+  root.style.setProperty("--color-primary-content", primaryContentFor(primary));
+}
+
+/** Switch between the bundled dark and light daisyUI themes. */
+export function applyThemeMode(mode: "dark" | "light") {
+  if (typeof document === "undefined") return;
+  document.documentElement.dataset.theme = mode;
+  document.documentElement.style.colorScheme = mode;
 }
 
 /**
@@ -38,6 +45,7 @@ export function applyTheme(settings: AppSettings) {
  */
 export function applyAppearance(settings: AppSettings) {
   if (typeof document === "undefined") return;
+  applyThemeMode(settings.theme_mode === "light" ? "light" : "dark");
   applyTheme(settings);
   if (settings.font_family) {
     document.body.style.fontFamily = settings.font_family;

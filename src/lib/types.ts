@@ -215,6 +215,8 @@ export interface CacheStat {
 }
 
 /* ── App Settings ──────────────────────── */
+export type ThemeMode = "dark" | "light";
+
 export interface AppSettings {
   close_to_tray: boolean;
   auto_play_on_start: boolean;
@@ -225,6 +227,7 @@ export interface AppSettings {
   desktop_lyrics_locked: boolean;
   desktop_lyrics_always_on_top: boolean;
   desktop_lyrics_position: LyricsPosition;
+  theme_mode: ThemeMode;
   theme_primary: string;
   desktop_lyrics_css: string;
   detail_lyrics_css: string;

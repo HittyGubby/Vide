@@ -5,6 +5,33 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vide</title>
+    <script>
+      // Guests persist dark/light + accent in localStorage; apply it before
+      // the first paint so a light theme does not flash dark.
+      (() => {
+        try {
+          const raw = localStorage.getItem("vide.guest-theme");
+          if (!raw) return;
+          const theme = JSON.parse(raw);
+          if (!theme || (theme.mode !== "dark" && theme.mode !== "light")) return;
+          const root = document.documentElement;
+          root.dataset.theme = theme.mode;
+          root.style.colorScheme = theme.mode;
+          if (typeof theme.primary === "string" && /^#?[0-9a-f]{6}$/i.test(theme.primary)) {
+            const hex = theme.primary.replace("#", "");
+            const n = parseInt(hex, 16);
+            const r = (n >> 16) & 255;
+            const g = (n >> 8) & 255;
+            const b = n & 255;
+            const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+            root.style.setProperty("--color-primary", theme.primary.startsWith("#") ? theme.primary : "#" + theme.primary);
+            root.style.setProperty("--color-primary-content", luminance > 0.6 ? "#101014" : "#ffffff");
+          }
+        } catch (e) {
+          /* no stored guest theme */
+        }
+      })();
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

@@ -3,6 +3,7 @@
   import Dialog from "$lib/ui/Dialog.svelte";
   import { browserLogin } from "$lib/transport";
   import { auth } from "$lib/stores/auth.svelte";
+  import { clearGuestTheme } from "$lib/themeGuest";
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -17,6 +18,8 @@
     try {
       await browserLogin(password);
       auth.authenticated = true;
+      // From now on the server's settings own the theme.
+      clearGuestTheme();
       password = "";
       open = false;
       window.location.reload();
