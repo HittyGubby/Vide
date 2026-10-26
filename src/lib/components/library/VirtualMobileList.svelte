@@ -17,6 +17,7 @@
     onpress,
     onlongpress,
     onscroll,
+    onreachbottom,
     row,
   }: {
     items: T[];
@@ -26,6 +27,8 @@
     onpress?: (item: T, index: number) => void;
     onlongpress?: (item: T, index: number) => void;
     onscroll?: (top: number) => void;
+    /** Fired when the scroll position is close to the end (infinite scroll). */
+    onreachbottom?: () => void;
     row: Snippet<[T, number]>;
   } = $props();
 
@@ -53,6 +56,9 @@
     top = el.scrollTop;
     height = el.clientHeight || height;
     onscroll?.(top);
+    if (onreachbottom && el.scrollHeight - el.scrollTop - el.clientHeight < 240) {
+      onreachbottom();
+    }
   }
 
   export function scrollToOffset(value: number) {

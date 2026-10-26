@@ -1,5 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import type { AppSettings, PluginState } from "$lib/types";
+import type { AppSettings, PluginState, SearchPreset } from "$lib/types";
 import { isTauri } from "$lib/isTauri";
 
 const REMOTE_KEY = "vide_remote_session";
@@ -144,6 +144,12 @@ function loadRemote(): RemoteSession | null {
 
 let remote: RemoteSession | null = loadRemote();
 let browserCsrf = "";
+/** Whether the browser has a signed-in cookie session (server-backed data). */
+let browserAuthed = false;
+
+export function setBrowserAuthed(value: boolean): void {
+  browserAuthed = value;
+}
 
 export async function browserLogin(password: string): Promise<void> {
   const response = await fetch("/api/v1/auth/login", {
@@ -155,16 +161,22 @@ export async function browserLogin(password: string): Promise<void> {
   if (!response.ok) throw new Error((await response.text()) || "login failed");
   const data = (await response.json()) as { csrf?: string };
   browserCsrf = data.csrf ?? "";
+  browserAuthed = true;
 }
 
 export async function browserAuthStatus(): Promise<boolean> {
   try {
     const response = await fetch("/api/v1/auth/me", { credentials: "same-origin" });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      browserAuthed = false;
+      return false;
+    }
     const data = (await response.json()) as { authenticated?: boolean; csrf?: string };
     browserCsrf = data.csrf ?? "";
-    return Boolean(data.authenticated);
+    browserAuthed = Boolean(data.authenticated);
+    return browserAuthed;
   } catch {
+    browserAuthed = false;
     return false;
   }
 }
@@ -175,6 +187,7 @@ export async function browserLogout(): Promise<void> {
     credentials: "same-origin",
   }).catch(() => undefined);
   browserCsrf = "";
+  browserAuthed = false;
 }
 
 export function remoteSession(): RemoteSession | null {
@@ -262,55 +275,90 @@ function browserLocal<T>(command: string, args: Record<string, unknown>): T {
       return [] as T;
     case "get_online_search_history":
       return readLocal<string[]>("online_search_history", []) as T;
-    case "set_online_search_history":
-      localStorage.setItem(localKey("online_search_history"), JSON.stringify(args.history ?? []));
+    case "set_online_search_history": {
+      const history = Array.isArray(args.history)
+        ? (args.history as string[])
+            .map((entry) => String(entry).trim())
+            .filter(Boolean)
+            .slice(0, 20)
+        : [];
+      localStorage.setItem(localKey("online_search_history"), JSON.stringify(history));
       return undefined as T;
+    }
     case "add_online_search_history": {
       const history = readLocal<string[]>("online_search_history", []);
-      const query = String(args.query ?? "");
-      const next = [query, ...history.filter((item) => item !== query)].slice(0, 30);
+      const query = String(args.query ?? "").trim();
+      const next = [query, ...history.filter((item) => item !== query)].filter(Boolean).slice(0, 20);
       localStorage.setItem(localKey("online_search_history"), JSON.stringify(next));
-      return undefined as T;
+      return next as T;
     }
     case "remove_online_search_history": {
       const history = readLocal<string[]>("online_search_history", []);
-      localStorage.setItem(localKey("online_search_history"), JSON.stringify(history.filter((item) => item !== args.query)));
-      return undefined as T;
+      const next = history.filter((item) => item !== args.query);
+      localStorage.setItem(localKey("online_search_history"), JSON.stringify(next));
+      return next as T;
     }
     case "clear_online_search_history":
-      localStorage.removeItem(localKey("online_search_history"));
+      localStorage.setItem(localKey("online_search_history"), JSON.stringify([]));
       return undefined as T;
     case "get_query_history":
       return readLocal<string[]>("query_history", []) as T;
     case "record_library_query": {
       const history = readLocal<string[]>("query_history", []);
-      const query = String(args.query ?? "");
-      localStorage.setItem(localKey("query_history"), JSON.stringify([query, ...history.filter((item) => item !== query)].slice(0, 30)));
-      return undefined as T;
+      const query = String(args.query ?? "").trim();
+      const next = [query, ...history.filter((item) => item !== query)].filter(Boolean).slice(0, 30);
+      localStorage.setItem(localKey("query_history"), JSON.stringify(next));
+      localStorage.setItem(localKey("last_library_query"), JSON.stringify(query));
+      return { history: next, last_query: query } as T;
     }
     case "remove_query_history": {
-      const history = readLocal<string[]>("query_history", []);
-      localStorage.setItem(localKey("query_history"), JSON.stringify(history.filter((item) => item !== args.query)));
-      return undefined as T;
+      const history = readLocal<string[]>("query_history", []).filter((item) => item !== args.query);
+      localStorage.setItem(localKey("query_history"), JSON.stringify(history));
+      return { history, last_query: readLocal<string>("last_library_query", "") } as T;
     }
-    case "clear_query_history":
-      localStorage.removeItem(localKey("query_history"));
-      return undefined as T;
-    case "list_search_presets":
-      return readLocal<unknown[]>("search_presets", []) as T;
-    case "save_search_preset": {
-      const presets = readLocal<unknown[]>("search_presets", []);
-      presets.push(args.preset);
-      localStorage.setItem(localKey("search_presets"), JSON.stringify(presets));
-      return undefined as T;
-    }
-    case "delete_search_preset": {
-      const presets = readLocal<Array<{ id?: string }>>("search_presets", []);
-      localStorage.setItem(localKey("search_presets"), JSON.stringify(presets.filter((item) => item.id !== args.id)));
-      return undefined as T;
+    case "clear_query_history": {
+      localStorage.setItem(localKey("query_history"), JSON.stringify([]));
+      return { history: [], last_query: readLocal<string>("last_library_query", "") } as T;
     }
     case "set_last_library_query":
+      localStorage.setItem(localKey("last_library_query"), JSON.stringify(String(args.query ?? "")));
+      return undefined as T;
     case "get_library_query_state":
+      return {
+        history: readLocal<string[]>("query_history", []),
+        last_query: readLocal<string>("last_library_query", ""),
+      } as T;
+    case "list_search_presets":
+      return readLocal<SearchPreset[]>("search_presets", []) as T;
+    case "save_search_preset": {
+      const presets = readLocal<SearchPreset[]>("search_presets", []);
+      const name = String(args.name ?? "").trim();
+      const query = String(args.query ?? "").trim();
+      const existing = presets.find((preset) => preset.name === name);
+      if (existing) {
+        existing.query = query;
+        localStorage.setItem(localKey("search_presets"), JSON.stringify(presets));
+        return existing as T;
+      }
+      const nextId =
+        presets
+          .map((preset) => Number((preset.id ?? "").replace("preset_", "")))
+          .filter(Number.isFinite)
+          .reduce((max, id) => Math.max(max, id), 0) + 1;
+      const preset: SearchPreset = { id: "preset_" + nextId, name, query };
+      presets.push(preset);
+      localStorage.setItem(localKey("search_presets"), JSON.stringify(presets));
+      return preset as T;
+    }
+    case "delete_search_preset": {
+      const presets = readLocal<SearchPreset[]>("search_presets", []);
+      localStorage.setItem(localKey("search_presets"), JSON.stringify(presets.filter((preset) => preset.id !== args.id)));
+      return undefined as T;
+    }
+    case "get_last_search_preset":
+      return readLocal<string | null>("last_search_preset", null) as T;
+    case "set_last_search_preset":
+      localStorage.setItem(localKey("last_search_preset"), JSON.stringify(String(args.id ?? "")));
       return undefined as T;
     default:
       throw new Error("browser mode does not support command: " + command);
@@ -374,6 +422,79 @@ async function saveRemoteServerSettings(settings: ServerSettings): Promise<void>
     library_roots: settings.library_roots,
     exclude_roots: settings.exclude_roots,
   });
+}
+
+
+/** Server-backed search history / presets / library query (signed-in web). */
+async function serverHistoryInvoke<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  switch (command) {
+    case "get_online_search_history":
+      return remoteRequest<T>("GET", "/api/v1/search-history");
+    case "add_online_search_history":
+      return remoteRequest<T>("POST", "/api/v1/search-history/add", {
+        query: args.query,
+      });
+    case "set_online_search_history":
+      return remoteRequest<T>("POST", "/api/v1/search-history", {
+        history: args.history,
+      });
+    case "remove_online_search_history": {
+      const history = await remoteRequest<string[]>("GET", "/api/v1/search-history");
+      const next = history.filter((item) => item !== args.query);
+      return remoteRequest<T>("POST", "/api/v1/search-history", {
+        history: next,
+      });
+    }
+    case "clear_online_search_history":
+      return remoteRequest<T>("POST", "/api/v1/search-history", {
+        history: [],
+      });
+    case "list_search_presets":
+      return remoteRequest<T>("GET", "/api/v1/search-presets");
+    case "save_search_preset":
+      return remoteRequest<T>("POST", "/api/v1/search-presets/save", {
+        name: args.name,
+        query: args.query,
+      });
+    case "delete_search_preset":
+      return remoteRequest<T>("POST", "/api/v1/search-presets/delete", {
+        id: args.id,
+      });
+    case "get_last_search_preset":
+      return remoteRequest<T>("GET", "/api/v1/search-presets/last");
+    case "set_last_search_preset":
+      return remoteRequest<T>("POST", "/api/v1/search-presets/last", {
+        id: args.id,
+      });
+    case "get_query_history": {
+      const state = await remoteRequest<{ history: string[] }>(
+        "GET",
+        "/api/v1/library-query",
+      );
+      return state.history as T;
+    }
+    case "get_library_query_state":
+      return remoteRequest<T>("GET", "/api/v1/library-query");
+    case "record_library_query":
+      return remoteRequest<T>("POST", "/api/v1/library-query/record", {
+        query: args.query,
+      });
+    case "remove_query_history":
+      return remoteRequest<T>("POST", "/api/v1/library-query/remove", {
+        query: args.query,
+      });
+    case "clear_query_history":
+      return remoteRequest<T>("POST", "/api/v1/library-query/clear", {});
+    case "set_last_library_query":
+      return remoteRequest<T>("POST", "/api/v1/library-query/last", {
+        query: args.query,
+      });
+    default:
+      return localInvoke<T>(command, args);
+  }
 }
 
 async function remoteInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -494,6 +615,7 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
     case "get_last_played":
     case "save_last_played":
     case "set_global_shortcuts":
+      return localInvoke<T>(command, args);
     case "get_online_search_history":
     case "set_online_search_history":
     case "add_online_search_history":
@@ -502,13 +624,19 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
     case "list_search_presets":
     case "save_search_preset":
     case "delete_search_preset":
+    case "get_last_search_preset":
+    case "set_last_search_preset":
     case "get_query_history":
     case "record_library_query":
     case "remove_query_history":
     case "clear_query_history":
     case "set_last_library_query":
     case "get_library_query_state":
-      return localInvoke<T>(command, args);
+      // Signed-in browsers read/write the server's SQLite (shared with the
+      // desktop app); guests keep their own history in localStorage.
+      return browserAuthed
+        ? serverHistoryInvoke<T>(command, args)
+        : localInvoke<T>(command, args);
     case "get_plugin_state":
       return remoteRequest<T>("GET", "/api/v1/plugins/state");
     case "reload_plugins":

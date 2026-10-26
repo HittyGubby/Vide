@@ -1667,6 +1667,11 @@ async fn dir_stats(dir: &Path) -> (u64, u64) {
     (count, size)
 }
 
+/// Count/size of the image cache; shared by the Tauri command and the server.
+pub(crate) async fn image_cache_stats() -> (u64, u64) {
+    dir_stats(&image_cache_dir()).await
+}
+
 /// Does this metadata blob carry a non-empty lyrics field?
 fn has_lyrics(json: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(json)

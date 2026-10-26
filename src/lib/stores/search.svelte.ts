@@ -1,8 +1,10 @@
 import { invoke } from "$lib/transport";
+import { authReady } from "$lib/stores/auth.svelte";
 
 /**
  * Online search history (the /search page), separate from the library query
- * history. Persisted in SQLite; no localStorage.
+ * history. Signed-in clients use the server's SQLite; guests keep it in
+ * localStorage (the transport decides).
  */
 class SearchStore {
   history = $state<string[]>([]);
@@ -13,6 +15,8 @@ class SearchStore {
   }
 
   async load() {
+    // Wait for the session probe: signed-in clients read the server's SQLite.
+    await authReady;
     const legacyKey = "vide_search_history";
     try {
       let history = await invoke<string[]>("get_online_search_history");

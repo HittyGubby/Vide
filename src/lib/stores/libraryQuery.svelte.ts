@@ -1,4 +1,5 @@
 import { invoke } from "$lib/transport";
+import { authReady } from "$lib/stores/auth.svelte";
 import type { SearchPreset } from "$lib/types";
 
 interface LibraryQueryState {
@@ -95,6 +96,7 @@ class LibraryQueryStore {
   }
 
   private async loadInternal(): Promise<void> {
+    await authReady;
     try {
       const [state, saved] = await Promise.all([
         invoke<LibraryQueryState>("get_library_query_state"),

@@ -272,6 +272,36 @@
     visibleCount = Math.min(searchPage.results.length, visibleCount + PAGE_STEP);
   }
 
+  // Infinite scroll: both the phone list and the desktop page reveal the next
+  // slice automatically; the guard prevents one gesture from skipping pages.
+  let autoLoading = false;
+  function autoLoadMore() {
+    if (!hasMore || autoLoading) return;
+    autoLoading = true;
+    loadMore();
+    setTimeout(() => (autoLoading = false), 250);
+  }
+
+  let viewEl = $state<HTMLDivElement | null>(null);
+  function onViewScroll() {
+    if (!viewEl) return;
+    if (viewEl.scrollHeight - viewEl.scrollTop - viewEl.clientHeight < 300) {
+      autoLoadMore();
+    }
+  }
+
+  // Desktop: if the first slice does not fill the viewport there is nothing to
+  // scroll, so reveal another slice until the page can scroll (or is done).
+  $effect(() => {
+    const _count = visibleResults.length;
+    if (platform.mobileUI || !hasMore || !viewEl) return;
+    queueMicrotask(() => {
+      if (viewEl && viewEl.scrollHeight <= viewEl.clientHeight + 40) {
+        autoLoadMore();
+      }
+    });
+  });
+
   function isHttpUrl(value: string): boolean {
     try {
       const url = new URL(value);
@@ -594,7 +624,12 @@
   });
 </script>
 
-<div class="search-view" class:mobile={platform.mobileUI}>
+<div
+  class="search-view"
+  class:mobile={platform.mobileUI}
+  bind:this={viewEl}
+  onscroll={onViewScroll}
+>
   <div class="source-tabs">
     {#each platforms as p}
       <button
@@ -666,13 +701,8 @@
           onmenu={openSheet}
           onlongpress={onSearchLongPress}
           oncovererror={(item, img) => void proxyCoverImage(img, item)}
+          onreachbottom={autoLoadMore}
         />
-
-        {#if hasMore}
-          <button class="load-more" onclick={loadMore}>
-            加载更多（剩余 {searchPage.results.length - visibleResults.length} 首）
-          </button>
-        {/if}
       </div>
     {:else}
       <div class="results" bind:this={resultsEl}>
@@ -746,13 +776,6 @@
             <div class="col-filler"></div>
           </div>
         {/each}
-        {#if hasMore}
-          <div class="pager">
-            <button class="page-btn" onclick={loadMore}>
-              加载更多（剩余 {searchPage.results.length - visibleResults.length} 首）
-            </button>
-          </div>
-        {/if}
       </div>
     {/if}
   {:else}
@@ -879,18 +902,6 @@
   .bar-btn:active {
     border-color: var(--color-primary);
     color: var(--color-primary);
-  }
-
-  .load-more {
-    flex: none;
-    height: 44px;
-    margin: 6px 10px;
-    border: 1px solid var(--panel-border);
-    border-radius: 9px;
-    background: var(--color-base-200);
-    color: var(--color-primary);
-    font-size: 13px;
-    cursor: pointer;
   }
 
   .source-tabs {
@@ -1177,33 +1188,6 @@
 
   .res-action {
     width: 30px;
-  }
-
-  .pager {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    padding: 12px 0 4px;
-    margin-top: auto;
-  }
-
-  .page-btn {
-    padding: 4px 10px;
-    border: 1px solid var(--color-base-300);
-    border-radius: 5px;
-    background: var(--color-base-200);
-    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
-    font-size: 12px;
-  }
-
-  .page-btn:hover:not(:disabled) {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-  }
-
-  .page-btn:disabled {
-    opacity: 0.35;
   }
 
   .row-btn {

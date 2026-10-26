@@ -22,6 +22,7 @@
     onlongpress,
     oncovererror,
     onscroll,
+    onreachbottom,
   }: {
     results: SearchResultItem[];
     playingKey: string | null;
@@ -35,6 +36,7 @@
     onlongpress: (item: SearchResultItem, index: number) => void;
     oncovererror?: (item: SearchResultItem, img: HTMLImageElement) => void;
     onscroll?: (top: number) => void;
+    onreachbottom?: () => void;
   } = $props();
 
   function keyOf(item: SearchResultItem): string {
@@ -106,6 +108,7 @@
   {onpress}
   {onlongpress}
   {onscroll}
+  {onreachbottom}
   row={row}
 />
 

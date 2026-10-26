@@ -4,13 +4,27 @@ import { serverStatus } from "$lib/stores/serverStatus.svelte";
 
 export const auth = $state({ authenticated: false });
 
+/**
+ * Resolves once the initial session probe has finished, so stores that read
+ * server-backed data know whether to use the server or localStorage.
+ */
+let markAuthReady: () => void = () => {};
+export const authReady = new Promise<void>((resolve) => {
+  markAuthReady = resolve;
+});
+
 /** Refresh the browser cookie session state. No-op on Tauri. */
 export async function refreshAuth(): Promise<void> {
-  if (isTauri) return;
+  if (isTauri) {
+    markAuthReady();
+    return;
+  }
   try {
     auth.authenticated = await browserAuthStatus();
   } catch {
     auth.authenticated = false;
+  } finally {
+    markAuthReady();
   }
 }
 

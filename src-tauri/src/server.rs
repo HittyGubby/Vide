@@ -989,6 +989,337 @@ async fn search_online(
     Ok(Json(serde_json::to_value(tracks).unwrap_or_default()))
 }
 
+// ── Search history / presets / library query (web parity) ─────────
+//
+// These live in the same SQLite settings table as the desktop app, so a
+// signed-in browser sees the history and saved queries the Tauri app wrote.
+
+#[derive(Deserialize)]
+struct QueryRequest {
+    query: String,
+}
+
+#[derive(Deserialize)]
+struct SearchHistorySet {
+    history: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct SearchPresetRequest {
+    name: String,
+    query: String,
+}
+
+#[derive(Deserialize)]
+struct IdRequest {
+    id: String,
+}
+
+fn decode_string_list(value: Option<Value>) -> Vec<String> {
+    value
+        .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+}
+
+async fn search_history(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    require_session(&state, &headers, None)?;
+    let history = decode_string_list(
+        state
+            .app
+            .db
+            .get_setting("online_search_history")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    );
+    Ok(Json(json!(history)))
+}
+
+async fn add_search_history(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<QueryRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let query = request.query.trim().to_string();
+    let mut history = decode_string_list(
+        state
+            .app
+            .db
+            .get_setting("online_search_history")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    );
+    history.retain(|entry| !entry.is_empty() && entry != &query);
+    if !query.is_empty() {
+        history.insert(0, query);
+        history.truncate(20);
+    }
+    state
+        .app
+        .db
+        .update_setting("online_search_history", &json!(history))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!(history)))
+}
+
+async fn set_search_history(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SearchHistorySet>,
+) -> Result<StatusCode, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let history: Vec<String> = request
+        .history
+        .into_iter()
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .take(20)
+        .collect();
+    state
+        .app
+        .db
+        .update_setting("online_search_history", &json!(history))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_search_presets(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    require_session(&state, &headers, None)?;
+    let presets = state
+        .app
+        .db
+        .list_search_presets()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!(presets)))
+}
+
+async fn save_search_preset_http(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SearchPresetRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let mut presets = state
+        .app
+        .db
+        .list_search_presets()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some(existing) = presets.iter_mut().find(|preset| preset.name == request.name) {
+        existing.query = request.query;
+        let saved = existing.clone();
+        state
+            .app
+            .db
+            .save_search_presets(&presets)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(Json(json!(saved)));
+    }
+
+    let next_id = presets
+        .iter()
+        .filter_map(|preset| preset.id.strip_prefix("preset_"))
+        .filter_map(|suffix| suffix.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let preset = crate::models::SearchPreset {
+        id: format!("preset_{next_id}"),
+        name: request.name,
+        query: request.query,
+    };
+    presets.push(preset.clone());
+    state
+        .app
+        .db
+        .save_search_presets(&presets)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!(preset)))
+}
+
+async fn delete_search_preset_http(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<IdRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let mut presets = state
+        .app
+        .db
+        .list_search_presets()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    presets.retain(|preset| preset.id != request.id);
+    state
+        .app
+        .db
+        .save_search_presets(&presets)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_last_search_preset(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    require_session(&state, &headers, None)?;
+    let id = state
+        .app
+        .db
+        .get_last_search_preset()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!(id)))
+}
+
+async fn set_last_search_preset(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<IdRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_csrf(&state, &headers)?;
+    state
+        .app
+        .db
+        .set_last_search_preset(&request.id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn library_query_value(db: &Database) -> Result<Value, String> {
+    let history = decode_string_list(
+        db.get_setting("query_history")
+            .await
+            .map_err(|error| error.to_string())?,
+    );
+    let last_query = db
+        .get_setting("last_library_query")
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Ok(json!({ "history": history, "last_query": last_query }))
+}
+
+async fn get_library_query(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    require_session(&state, &headers, None)?;
+    let value = library_query_value(&state.app.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(value))
+}
+
+async fn record_library_query_http(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<QueryRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let query = request.query.trim().to_string();
+    let mut history = decode_string_list(
+        state
+            .app
+            .db
+            .get_setting("query_history")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    );
+    history.retain(|entry| !entry.is_empty() && entry != &query);
+    if !query.is_empty() {
+        history.insert(0, query.clone());
+        history.truncate(30);
+    }
+    state
+        .app
+        .db
+        .update_setting("query_history", &json!(history))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state
+        .app
+        .db
+        .update_setting("last_library_query", &json!(query))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!({ "history": history, "last_query": query })))
+}
+
+async fn remove_library_query_http(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<QueryRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let mut history = decode_string_list(
+        state
+            .app
+            .db
+            .get_setting("query_history")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    );
+    history.retain(|entry| entry != &request.query);
+    state
+        .app
+        .db
+        .update_setting("query_history", &json!(history))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let value = library_query_value(&state.app.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(value))
+}
+
+async fn clear_library_query_http(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    state
+        .app
+        .db
+        .update_setting("query_history", &json!([]))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let value = library_query_value(&state.app.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(value))
+}
+
+async fn set_last_library_query_http(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<QueryRequest>,
+) -> Result<StatusCode, StatusCode> {
+    require_csrf(&state, &headers)?;
+    state
+        .app
+        .db
+        .update_setting("last_library_query", &json!(request.query.trim()))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Deserialize)]
 struct ResolveRequest {
     platform: String,
@@ -1228,8 +1559,9 @@ async fn cache_stats(
             metadata_count += 1;
         }
     }
+    let (image_count, image_size) = crate::features::ui::image_cache_stats().await;
     Ok(Json(json!([
-        { "kind": "image", "label": "图片缓存", "count": 0, "size": 0 },
+        { "kind": "image", "label": "图片缓存", "count": image_count, "size": image_size },
         { "kind": "audio", "label": "音频缓存", "count": audio_count, "size": audio_size },
         { "kind": "lyric", "label": "歌词缓存", "count": lyric_count, "size": null },
         { "kind": "metadata", "label": "元信息缓存", "count": metadata_count, "size": null },
@@ -1716,6 +2048,17 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/cache/stats", get(cache_stats))
         .route("/api/v1/cache/clear", post(clear_cache))
         .route("/api/v1/cache/song/:id", post(clear_song_cache))
+        .route("/api/v1/search-history", get(search_history).post(set_search_history))
+        .route("/api/v1/search-history/add", post(add_search_history))
+        .route("/api/v1/search-presets", get(get_search_presets))
+        .route("/api/v1/search-presets/save", post(save_search_preset_http))
+        .route("/api/v1/search-presets/delete", post(delete_search_preset_http))
+        .route("/api/v1/search-presets/last", get(get_last_search_preset).post(set_last_search_preset))
+        .route("/api/v1/library-query", get(get_library_query))
+        .route("/api/v1/library-query/record", post(record_library_query_http))
+        .route("/api/v1/library-query/remove", post(remove_library_query_http))
+        .route("/api/v1/library-query/clear", post(clear_library_query_http))
+        .route("/api/v1/library-query/last", post(set_last_library_query_http))
         .route("/api/v1/import/songs", post(import_songs))
         .route("/api/v1/songs/:id/tags", get(song_tags))
         .route("/api/v1/songs/:id/metadata", post(update_metadata))

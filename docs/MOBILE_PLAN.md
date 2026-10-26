@@ -144,7 +144,16 @@ src/lib/
 - 不做 PWA/SW/离线/IDB；不补 manifest。
 - 依赖变化：删除 `monaco-editor`、`@tanstack/svelte-table`；新增 `codemirror`、`@codemirror/lang-css`、`@codemirror/theme-one-dark`。虚拟列表保留自研 `virtualSlice`，未引入 `@tanstack/svelte-virtual`。
 
-## 10. 可选收尾（不在 P0–P5 内）
+## 10. 手机实测修复（2026-10-26）
+
+- 搜索历史 / 查询收藏 / 曲库查询历史：登录后走服务端 SQLite，与 Tauri 共用；游客落 localStorage。新增 `/api/v1/search-history*`、`/api/v1/search-presets*`、`/api/v1/library-query*`，并在 transport 里按会话切换。
+- 修复 Web 端 `browserLocal` 的返回值为 `undefined`，导致 `libraryQuery.load` 整体失败、历史与收藏同时空白；以及 `add_online_search_history` 把 store 的 history 覆盖成 `undefined`。
+- 搜索页输入框聚焦弹出历史下拉（清除 / 单条删除 / 点击即搜）；登录后读 SQLite，游客读本地。
+- 搜索结果改为滚动自动加载：手机列表触底、桌面页面触底；桌面首屏填不满时自动再补一页（去掉“加载更多”按钮）。
+- 插件单次 search 上限为 30（请求 limit 60/100 均返回 30），UI 首屏 20 条后滚动补齐到 30；更多需要插件协议支持分页。
+- 服务端 `/api/v1/cache/stats` 之前把图片缓存写死 0，现按图片缓存目录统计（跳过 `.type` sidecar）。
+
+## 11. 可选收尾（不在 P0–P5 内）
 
 - 本地文件内嵌封面：`/api/v1/cover/:id`（服务端读 lofty picture）+ Tauri 命令/data URL；播放页与悬停卡使用。
 - 用 Lighthouse 复核移动端首屏；如需要再考虑 manifest（当前明确不做 PWA）。
