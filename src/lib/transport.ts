@@ -8,10 +8,10 @@ const TARGET_KEY = "vide_playback_target";
 export type PlaybackTarget = "server" | "client";
 
 export function getPlaybackTarget(): PlaybackTarget {
-  if (typeof localStorage === "undefined") return isTauri ? "server" : "client";
+  if (typeof localStorage === "undefined") return remote ? "client" : isTauri ? "server" : "client";
   const stored = localStorage.getItem(TARGET_KEY);
   if (stored === "client" || stored === "server") return stored;
-  return isTauri ? "server" : "client";
+  return remote ? "client" : isTauri ? "server" : "client";
 }
 
 export function setPlaybackTarget(target: PlaybackTarget): void {
@@ -194,6 +194,8 @@ export async function connectRemote(baseUrl: string, password = ""): Promise<Rem
   }
   if (typeof localStorage !== "undefined") {
     localStorage.setItem(REMOTE_KEY, JSON.stringify(remote));
+    // A freshly connected remote session starts on the client player.
+    localStorage.setItem(TARGET_KEY, "client");
   }
   return remote;
 }
@@ -382,6 +384,8 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
         "GET",
         "/api/v1/songs/" + encodeURIComponent(arg<string>(args, "songId")) + "/tags",
       );
+    case "get_tag_history":
+      return remoteRequest<T>("GET", "/api/v1/tag-history");
     case "get_namespaces":
       return remoteRequest<T>("GET", "/api/v1/namespaces");
     case "get_meta_tags":

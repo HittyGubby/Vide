@@ -1053,6 +1053,13 @@ async fn song_tags(
     Ok(Json(json!(tags)))
 }
 
+async fn tag_history(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
+    let values = crate::features::tags::get_tag_history(&state.app.db, 50)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(json!(values)))
+}
+
 async fn namespaces(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
     let values = crate::features::tags::get_namespaces(&state.app.db)
         .await
@@ -1625,6 +1632,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/songs/:id/metadata", post(update_metadata))
         .route("/api/v1/tags", post(add_tag))
         .route("/api/v1/tags/remove", post(remove_tag))
+        .route("/api/v1/tag-history", get(tag_history))
         .route("/api/v1/namespaces", get(namespaces))
         .route("/api/v1/meta-tags", get(meta_tags))
         .route("/api/v1/tag-values", get(tag_values))

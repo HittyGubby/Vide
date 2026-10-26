@@ -26,7 +26,14 @@ pub async fn add_tag(db: &Database, song_id: &SongId, namespace: &str, value: &s
         .exec(&db.conn)
         .await?;
 
+    db.record_tag_history(namespace, value).await?;
+
     Ok(())
+}
+
+/// Most recently added tags, shown as history pills in the editor.
+pub async fn get_tag_history(db: &Database, limit: u64) -> Result<Vec<Tag>, DbErr> {
+    db.list_tag_history(limit).await
 }
 
 /// Remove a specific tag from a song.

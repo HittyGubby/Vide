@@ -1965,6 +1965,15 @@ pub async fn get_meta_tags(
 }
 
 #[tauri::command]
+pub async fn get_tag_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::models::Tag>, String> {
+    crate::features::tags::get_tag_history(&*state.db, 50)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn add_tag(
     state: tauri::State<'_, AppState>,
     song_id: String,

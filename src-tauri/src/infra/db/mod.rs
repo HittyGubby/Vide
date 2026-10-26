@@ -53,6 +53,20 @@ async fn ensure_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
     create_table!(db, schema, backend, entity::cache_entry::Entity);
     create_table!(db, schema, backend, entity::setting::Entity);
 
+    // Tag usage history is independent of the songs currently in the library.
+    db.execute(Statement::from_string(
+        backend,
+        "CREATE TABLE IF NOT EXISTS tag_history (
+            namespace TEXT NOT NULL,
+            value TEXT NOT NULL,
+            last_used TEXT NOT NULL,
+            use_count INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (namespace, value)
+        )"
+        .to_owned(),
+    ))
+    .await?;
+
     Ok(())
 }
 
@@ -991,6 +1005,55 @@ impl Database {
     // ── App Settings ──────────────────────────────────────────────
 
     const SETTINGS_KEY: &'static str = "video_settings";
+
+    /// Remember a tag the user added so the editor can offer it later.
+    pub async fn record_tag_history(&self, namespace: &str, value: &str) -> Result<(), DbErr> {
+        self.conn
+            .execute(Statement::from_sql_and_values(
+                self.conn.get_database_backend(),
+                "INSERT INTO tag_history (namespace, value, last_used, use_count)
+                 VALUES (?, ?, ?, 1)
+                 ON CONFLICT(namespace, value) DO UPDATE SET
+                   last_used = excluded.last_used,
+                   use_count = tag_history.use_count + 1",
+                [
+                    namespace.to_string().into(),
+                    value.to_string().into(),
+                    crate::infra::time::now_date().into(),
+                ],
+            ))
+            .await?;
+        Ok(())
+    }
+
+    /// Most recently used tags, newest first.
+    pub async fn list_tag_history(&self, limit: u64) -> Result<Vec<Tag>, DbErr> {
+        use sea_orm::FromQueryResult;
+
+        #[derive(FromQueryResult)]
+        struct HistoryRow {
+            namespace: String,
+            value: String,
+        }
+
+        let rows = HistoryRow::find_by_statement(Statement::from_sql_and_values(
+            self.conn.get_database_backend(),
+            "SELECT namespace, value FROM tag_history
+             ORDER BY last_used DESC, use_count DESC, namespace, value
+             LIMIT ?",
+            [(limit.min(200) as i64).into()],
+        ))
+        .all(&self.conn)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| Tag {
+                namespace: row.namespace,
+                value: row.value,
+            })
+            .collect())
+    }
 
     /// Backfill missing added_time values for older databases.
     pub async fn backfill_added_time(&self) -> Result<u64, DbErr> {

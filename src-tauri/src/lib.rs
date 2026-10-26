@@ -241,6 +241,7 @@ pub fn run() {
             features::ui::clear_cache_kind,
             // Tags
             features::ui::get_meta_tags,
+            features::ui::get_tag_history,
             features::ui::add_tag,
             features::ui::remove_tag,
             features::ui::get_song_tags,

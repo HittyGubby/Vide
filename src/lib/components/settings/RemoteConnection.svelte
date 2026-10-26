@@ -19,7 +19,7 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let current = $state<RemoteSession | null>(null);
-  let target = $state<PlaybackTarget>("server");
+  let target = $state<PlaybackTarget>("client");
   let loginPassword = $state("");
   let loginBusy = $state(false);
 

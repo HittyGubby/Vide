@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "$lib/transport";
+  import { invoke, isRemoteGuest } from "$lib/transport";
   import { onMount } from "svelte";
   import { X, Plus } from "lucide-svelte";
   import type { Song, Tag } from "$lib/types";
@@ -19,17 +19,68 @@
   let suggestions = $state<string[]>([]);
   let selectedSuggestion = $state(-1);
   let loading = $state(true);
+  let history = $state<Tag[]>([]);
+  let expanded = $state<Set<string>>(new Set());
+  const HISTORY_KEY = "vide_tag_history";
 
   onMount(async () => {
     await loadTags();
+    await loadCatalog();
+    await loadHistory();
+    loading = false;
+  });
+
+  async function loadCatalog() {
     try {
       namespaces = await invoke("get_namespaces");
       metaTags = await invoke("get_meta_tags");
+      if (expanded.size === 0) {
+        expanded = new Set(metaTags.map((entry) => entry.namespace));
+      }
     } catch {
       /* ignore */
     }
-    loading = false;
-  });
+  }
+
+  function localHistory(): Tag[] {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveLocalHistory(tagsToSave: Tag[]) {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(tagsToSave.slice(0, 50)));
+  }
+
+  async function loadHistory() {
+    if (isRemoteGuest()) {
+      history = localHistory();
+      return;
+    }
+    try {
+      history = await invoke<Tag[]>("get_tag_history");
+      saveLocalHistory(history);
+    } catch {
+      history = localHistory();
+    }
+  }
+
+  function rememberLocal(ns: string, val: string) {
+    if (!isRemoteGuest()) return;
+    const next = [{ namespace: ns, value: val }, ...localHistory().filter((tag) => tag.namespace !== ns || tag.value !== val)];
+    history = next.slice(0, 50);
+    saveLocalHistory(history);
+  }
+
+  function toggleNamespace(namespace: string) {
+    const next = new Set(expanded);
+    if (next.has(namespace)) next.delete(namespace);
+    else next.add(namespace);
+    expanded = next;
+  }
 
   async function loadTags() {
     try {
@@ -77,6 +128,27 @@
 
       // Update the song's tags array in-place so the parent list re-renders
       song.tags = tags;
+
+      if (isRemoteGuest()) {
+        rememberLocal(ns, val);
+      } else {
+        await loadHistory();
+        saveLocalHistory(history);
+      }
+      expanded = new Set([...expanded, ns]);
+      const existing = metaTags.find((entry) => entry.namespace === ns);
+      if (existing) {
+        if (!existing.children.includes(val)) {
+          metaTags = metaTags.map((entry) =>
+            entry.namespace === ns
+              ? { ...entry, children: [...entry.children, val].sort() }
+              : entry,
+          );
+        }
+      } else {
+        metaTags = [...metaTags, { namespace: ns, children: [val] }];
+      }
+      namespaces = namespaces.includes(ns) ? namespaces : [...namespaces, ns];
     } catch (e) {
       console.error("add tag error:", e);
     }
@@ -233,6 +305,44 @@
           </div>
         {/each}
       {/if}
+
+      {#if history.length > 0}
+        <div class="section-label">最近添加</div>
+        <div class="history-list">
+          {#each history as tag}
+            <button
+              class="history-pill"
+              onclick={() => addTag(tag.namespace + ":" + tag.value)}
+              title="添加 {tag.namespace}:{tag.value}"
+            >{tag.namespace}:{tag.value}</button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if metaTags.length > 0}
+        <div class="section-label">全部标签</div>
+        <div class="catalog-list">
+          {#each metaTags as group}
+            <div class="catalog-group">
+              <button class="catalog-ns" onclick={() => toggleNamespace(group.namespace)}>
+                <span class="chevron">{expanded.has(group.namespace) ? "▾" : "▸"}</span>
+                {group.namespace}
+              </button>
+              {#if expanded.has(group.namespace)}
+                <div class="catalog-values">
+                  {#each group.children as value}
+                    <button
+                      class="catalog-value"
+                      onclick={() => addTag(group.namespace + ":" + value)}
+                      title="添加 {group.namespace}:{value}"
+                    >{value}</button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- Add tag input -->
@@ -292,8 +402,8 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 320px;
-    max-height: 380px;
+    width: 460px;
+    max-height: 640px;
     background: var(--bg-elevated);
     border: 1px solid var(--border-normal);
     border-radius: 10px;
@@ -394,6 +504,74 @@
   .tag-remove:hover {
     opacity: 1;
     background: rgba(255, 255, 255, 0.1);
+  }
+
+  .section-label {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .history-list,
+  .catalog-values {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .history-pill,
+  .catalog-value {
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .history-pill:hover,
+  .catalog-value:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    background: var(--accent-surface);
+  }
+
+  .catalog-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .catalog-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .catalog-ns {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 0;
+    cursor: pointer;
+  }
+
+  .chevron {
+    width: 10px;
+    color: var(--text-tertiary);
+    font-size: 10px;
   }
 
   /* ── Add Input ──────────────────────────────────── */
