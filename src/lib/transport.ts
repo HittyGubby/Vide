@@ -200,6 +200,7 @@ export function isRemoteMode(): boolean {
 
 export function disconnectRemote(): void {
   remote = null;
+  browserAuthed = false;
   if (typeof localStorage !== "undefined") localStorage.removeItem(REMOTE_KEY);
 }
 
@@ -224,6 +225,7 @@ export async function connectRemote(baseUrl: string, password = ""): Promise<Rem
     const data = (await response.json()) as { token?: string; csrf?: string };
     if (!data.token || !data.csrf) throw new Error("server did not return a session token");
     remote = { baseUrl: base, token: data.token, csrf: data.csrf };
+    browserAuthed = true;
   }
   if (typeof localStorage !== "undefined") {
     localStorage.setItem(REMOTE_KEY, JSON.stringify(remote));
