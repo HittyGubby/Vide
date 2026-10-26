@@ -1,7 +1,7 @@
 <script lang="ts">
   import SettingsGroup from "$lib/components/settings/ui/SettingsGroup.svelte";
   import SettingCard from "$lib/components/settings/ui/SettingCard.svelte";
-  import MonacoCssEditor from "$lib/components/settings/MonacoCssEditor.svelte";
+  import CssEditor from "$lib/components/settings/CssEditor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import { platform } from "$lib/platform.svelte";
   import { isTauri } from "$lib/isTauri";
@@ -21,14 +21,14 @@
   <SettingCard>
     {#if isTauri}
       <p class="editor-label">悬浮歌词样式</p>
-      <MonacoCssEditor
+      <CssEditor
         value={settingsStore.settings.desktop_lyrics_css}
         onchange={(next) => void setCss("desktop_lyrics_css", next)}
         heightPx={editorHeight}
       />
     {/if}
     <p class="editor-label">播放详情歌词样式</p>
-    <MonacoCssEditor
+    <CssEditor
       value={settingsStore.settings.detail_lyrics_css}
       onchange={(next) => void setCss("detail_lyrics_css", next)}
       heightPx={editorHeight}

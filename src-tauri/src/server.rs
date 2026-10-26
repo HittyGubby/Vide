@@ -9,10 +9,12 @@ use argon2::Argon2;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response, Sse};
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{extract::Request, Router};
 use axum_server::tls_rustls::RustlsConfig;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use rand::RngCore;
@@ -350,6 +352,29 @@ fn public_song(mut song: crate::models::Song) -> Value {
 }
 
 async fn list_songs(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
+    let songs = state
+        .app
+        .db
+        .list_library_songs()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Lyrics can be tens of KB per song; the library list does not need them.
+    // The detail endpoint (and /songs/export) still returns the full song.
+    let songs: Vec<_> = songs
+        .into_iter()
+        .map(|song| {
+            let mut value = public_song(song);
+            if let Some(metadata) = value.get_mut("metadata").and_then(Value::as_object_mut) {
+                metadata.insert("lyrics".to_string(), Value::Null);
+            }
+            value
+        })
+        .collect();
+    Ok(Json(json!(songs)))
+}
+
+/// Full song payloads for the JSON export (lyrics included).
+async fn export_songs(State(state): State<ServerState>) -> Result<Json<Value>, StatusCode> {
     let songs = state
         .app
         .db
@@ -1684,6 +1709,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/me", get(me))
         .route("/api/v1/songs", get(list_songs))
+        .route("/api/v1/songs/export", get(export_songs))
         .route("/api/v1/songs/:id", get(get_song))
         .route("/api/v1/server-settings", get(get_server_settings).post(set_server_settings))
         .route("/api/v1/library/scan", post(scan_library))
@@ -1736,6 +1762,44 @@ fn build_router(state: ServerState) -> Router {
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(cors_layer())
+        .layer(CompressionLayer::new())
+        .layer(middleware::from_fn(skip_compression))
+        .layer(middleware::from_fn(static_cache_headers))
+}
+
+/// Range requests, audio streams and SSE must not be gzip-wrapped: compression
+/// would break byte ranges and delay event delivery.
+async fn skip_compression(mut req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if path.starts_with("/api/v1/media")
+        || path.starts_with("/api/v1/download")
+        || path.starts_with("/api/v1/image")
+        || path.starts_with("/api/v1/player/stream")
+    {
+        req.headers_mut().remove(header::ACCEPT_ENCODING);
+    }
+    next.run(req).await
+}
+
+/// Hashed SvelteKit assets never change; the SPA shell must revalidate, and
+/// API responses must not be cached unless they set their own headers (images
+/// and media do).
+async fn static_cache_headers(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    if headers.contains_key(header::CACHE_CONTROL) {
+        return response;
+    }
+    let value = if path.starts_with("/_app/immutable/") {
+        "public, max-age=31536000, immutable"
+    } else if path.starts_with("/api/") {
+        "no-store"
+    } else {
+        "no-cache"
+    };
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+    response
 }
 
 fn cors_layer() -> CorsLayer {
@@ -1779,6 +1843,9 @@ pub async fn run_from_args(args: Vec<String>) -> Result<(), String> {
         .map(PathBuf::from)
         .unwrap_or_else(default_data_dir);
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create data dir: {e}"))?;
+    // Keep image/audio caches beside the server's own database instead of the
+    // desktop app's global data directory.
+    crate::set_data_dir(data_dir.clone());
     let db_path = data_dir.join("vide.db");
 
     if let Some(password) = arg_value(&args, "--set-password") {

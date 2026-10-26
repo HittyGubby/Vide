@@ -9,6 +9,7 @@ pub use models::*;
 pub use infra::*;
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tauri::{Emitter, Manager};
 
 /// One-time LX Music library import, reused by the import_lx CLI.
@@ -16,8 +17,23 @@ pub mod lx_import {
     pub use crate::features::importer::{import_lx_list_at, LxImportReport};
 }
 
+/// Explicit data directory, used by vide-server's `--data-dir`.
+static DATA_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Point every database/cache path at an explicit directory.
+///
+/// The desktop app keeps the default, while the standalone server must keep
+/// its caches next to its own database instead of the user's app data.
+pub fn set_data_dir(path: PathBuf) {
+    std::fs::create_dir_all(&path).ok();
+    let _ = DATA_DIR_OVERRIDE.set(path);
+}
+
 /// Directory holding the database and all on-disk caches.
 pub fn app_data_dir() -> PathBuf {
+    if let Some(path) = DATA_DIR_OVERRIDE.get() {
+        return path.clone();
+    }
     let mut path = dirs::data_dir().unwrap_or_else(|| {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     });
@@ -154,6 +170,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Library
             features::ui::list_songs,
+            features::ui::export_songs,
             features::ui::list_library_songs,
             features::ui::import_songs,
             features::ui::get_song,

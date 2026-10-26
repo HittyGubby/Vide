@@ -22,6 +22,17 @@ pub async fn list_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, 
         .map_err(|e| e.to_string())
 }
 
+/// Full song payloads for the JSON export (lyrics included); the list command
+/// on the server drops lyrics to keep its payload small.
+#[tauri::command]
+pub async fn export_songs(state: tauri::State<'_, AppState>) -> Result<Vec<Song>, String> {
+    state
+        .db
+        .query_songs(&crate::infra::db::QueryFilter::default())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Import a batch of songs (upsert). Returns the number imported.
 #[tauri::command]
 pub async fn import_songs(

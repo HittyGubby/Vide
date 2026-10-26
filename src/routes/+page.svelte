@@ -185,7 +185,6 @@
     if (listEl) {
       viewTop = listEl.scrollTop;
       viewHeight = listEl.clientHeight || 0;
-      measureScrollbar();
     }
     clearHover();
     saveScroll();

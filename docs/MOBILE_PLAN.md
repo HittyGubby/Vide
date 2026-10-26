@@ -1,6 +1,6 @@
 # Vide 移动端 Web 视图与模块化计划
 
-> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）、P3/P3b ✅（设置与拆分）、P4 ✅（`/player`）。下一步 P5：性能。
+> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）、P3/P3b ✅（设置与拆分）、P4 ✅（`/player`）、P5 ✅（性能）。可选收尾见 §10。
 > 按 P0 → P5 顺序推进。
 > 范围：手机浏览器的响应式 Web 视图（含 PWA 之外的移动体验）；**不做** Tauri 移动端、**不做** PWA/Service Worker/离线/IndexedDB。
 
@@ -130,7 +130,7 @@ src/lib/
 | P3 ✅ | 设置切片：单路由 + 移动端分类列表 / `?section=` 两级、桌面 sticky 分区导航 + 滚动高亮；10 个分区组件 + 共享 `SettingsGroup/SettingCard/SettingRow/SettingToggle`；PluginSettings 与 RemoteConnection 改为纯内容组件；表单从 table 改为响应式行式布局 | 手机可逐项配置 |
 | P3b ✅ | PluginSettings 拆成 `PluginCard`（单个插件+详情）、`RouteSettings`（平台路由+argv）与 `pluginHelpers`；TagEditor 拆成 `TagSelected` / `TagHistory` / `TagCatalog` / `TagInput` | 文件行数下降、行为不变 |
 | P4 ✅ | `/player` 成为正式路由（桌面与手机共用）：去掉 `ui.showPlayerDetail` 覆盖层，播放页不再渲染壳；桌面沿用原 PlayerDetail（含 Tauri 窗口控制与拖拽区），手机用新的 `MobilePlayerDetail`（封面/歌词 scroll-snap 分页、进度、传输键、播放设置底部弹层：模式/音量/倍速）；歌词抽成共享 store；播放栏标题区可点击进入 | 手机播放页可用 |
-| P5 | 性能：Monaco 移除、压缩/缓存头、payload 瘦身、服务端缓存目录跟随 `--data-dir`、本地封面 | Lighthouse / 传输体积下降 |
+| P5 ✅ | Monaco → CodeMirror（按需加载，immutable 包共 1.3 MB，最大 chunk 308 KB，无 worker）；服务端 gzip/br（带 Range 的 media/download、image 与 SSE 明确跳过）；静态哈希资源 `immutable`、HTML `no-cache`、API `no-store`（image 自己的缓存头保留）；列表 DTO 去掉歌词，导出改走 `/api/v1/songs/export`；服务端图片/音频缓存跟随 `--data-dir`；滚动条宽度移出 scroll 处理；虚拟列表沿用自研 `virtualSlice` | gzip + 强缓存生效、列表体积下降 |
 
 ## 9. 已决事项
 
@@ -138,6 +138,13 @@ src/lib/
 - 平板走桌面 UI；抽屉在左侧（登录、播放位置都在里面）。
 - 设置保持单页；移动端用 `?section=` 两级。
 - 下载对游客开放，权限跟随 `public_media`；编辑入口仍只对登录用户开放。
-- 本地封面优先内嵌图，否则大 V。
-- 不做 PWA/SW/离线/IDB；最后按 Lighthouse 与传输体积再决定是否补 manifest。
-- 依赖变化：删除 `monaco-editor`、`@tanstack/svelte-table`；新增 `@tanstack/svelte-virtual`、`@codemirror/lang-css`。
+- 封面：远端封面走服务端代理；本地文件的内嵌图尚未做（见 §10），当前退回大 V。
+- 不做 PWA/SW/离线/IDB；不补 manifest。
+- 依赖变化：删除 `monaco-editor`、`@tanstack/svelte-table`；新增 `codemirror`、`@codemirror/lang-css`、`@codemirror/theme-one-dark`。虚拟列表保留自研 `virtualSlice`，未引入 `@tanstack/svelte-virtual`。
+
+## 10. 可选收尾（不在 P0–P5 内）
+
+- 本地文件内嵌封面：`/api/v1/cover/:id`（服务端读 lofty picture）+ Tauri 命令/data URL；播放页与悬停卡使用。
+- 用 Lighthouse 复核移动端首屏；如需要再考虑 manifest（当前明确不做 PWA）。
+- 旧库 `added_time` 格式迁移：由用户单独处理（规范见 §7.1）。
+- 歌词首行的“居中”位置：短歌词时 `.lyrics-lines` 没有上下留白，active 行会停在顶部；如需要可加动态 padding。

@@ -381,6 +381,8 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
     case "list_library_songs":
     case "list_songs":
       return remoteRequest<T>("GET", "/api/v1/songs");
+    case "export_songs":
+      return remoteRequest<T>("GET", "/api/v1/songs/export");
     case "search_songs":
       return remoteRequest<T>(
         "GET",

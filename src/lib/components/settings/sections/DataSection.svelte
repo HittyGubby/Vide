@@ -31,7 +31,7 @@
     exporting = true;
     importMessage = null;
     try {
-      const songs = await invoke("list_songs");
+      const songs = await invoke("export_songs");
       downloadJson(JSON.stringify(songs, null, 2), "vide_songs_" + stamp() + ".json");
     } catch (e) {
       console.error("export error:", e);
