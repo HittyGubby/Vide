@@ -1,6 +1,6 @@
 # Vide 移动端 Web 视图与模块化计划
 
-> 状态：P0 ✅、P1 ✅（曲库在手机上已可用）。下一步 P2：搜索切片。
+> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）。下一步 P3：设置切片。
 > 按 P0 → P5 顺序推进。
 > 范围：手机浏览器的响应式 Web 视图（含 PWA 之外的移动体验）；**不做** Tauri 移动端、**不做** PWA/Service Worker/离线/IndexedDB。
 
@@ -97,7 +97,7 @@ src/lib/
 5. **服务端压缩 + 缓存头**：`tower-http` 加 `CompressionLayer`；`/_app/immutable/*` 加 `Cache-Control: immutable`。
 6. **虚拟化**：`@tanstack/svelte-virtual`（`scrollToIndex` 取代现在 40×50ms 轮询），搜索"加载更多"配合使用。
 7. **列渲染**：已抽 `columnLayout.svelte.ts` 并由它驱动桌面表的 flex 列（宽度就是列宽），TanStack Table 已移除；搜索页共用同一套。
-8. **封面**：本地歌曲内嵌封面 → Web 走 `/api/v1/cover/:id`，Tauri 走缓存文件 + asset protocol；无封面回落大 V。顺带修复"图片缓存"目录从来没人写入的问题。
+8. **封面**：线上封面已由 `/api/v1/image` 在服务端落盘缓存（`cache/images`，浏览器缓存之外的第二层）；本地歌曲内嵌封面仍待做——Web 走 `/api/v1/cover/:id`，Tauri 走缓存文件 + asset protocol，无封面回落大 V。
 
 ## 7. 数据修复
 
@@ -126,7 +126,7 @@ src/lib/
 |---|---|---|
 | P0 ✅ | 文档、platform 层、壳拆分、弹层原语、CSS 修复、列布局共享模块、added_time/tag 历史、清理。`selection / actions / virtual` 随 P1 一起抽 | 桌面外观不变、`bun run check` 通过 |
 | P1 ✅ | 曲库纵向切片：数据 store、共享列/选择/虚拟/动作模块、移动列表、MiniPlayer、排序/操作 sheet、移除 TanStack、桌面紧凑化（34px 行高 / 30px 表头 / 6px 内边距） | 手机可用完整曲库 |
-| P2 | 搜索切片（加载更多）、封面、图片缓存修复 | 手机可搜索并播放 |
+| P2 ✅ | 搜索切片：通用 `VirtualMobileList`（曲库与搜索结果共用滚动/虚拟/手势）、移动搜索结果行（封面 · 平台/歌手/专辑/标签）、加载更多、选择态与底部动作面板；封面懒加载 + bilibili 直接走代理；服务端图片磁盘缓存（url+referer 为键，`.type` sidecar，缓存统计不再计 sidecar） | 手机可搜索、加载更多、播放与编辑 |
 | P3 | 设置切片（`?section=`）、PluginSettings/TagEditor 拆分 | 手机可配置 |
 | P4 | `/player` 路由 + 移动端播放详情（封面/歌词分页） | 手机播放页可用 |
 | P5 | 性能：Monaco 移除、压缩/缓存头、payload 瘦身、虚拟列表、预加载 | Lighthouse / 传输体积下降 |

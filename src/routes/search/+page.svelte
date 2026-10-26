@@ -14,7 +14,16 @@
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
   import { isTauri } from "$lib/isTauri";
-  import { downloadTarget as remoteDownloadTarget, getPlaybackTarget, isRemoteMode } from "$lib/transport";
+  import {
+    downloadTarget as remoteDownloadTarget,
+    getPlaybackTarget,
+    isRemoteMode,
+    remoteImageUrl,
+  } from "$lib/transport";
+  import { platform } from "$lib/platform.svelte";
+  import { SelectionStore } from "$lib/library/selection.svelte";
+  import MobileSearchList from "$lib/components/library/MobileSearchList.svelte";
+  import MenuSheet from "$lib/ui/MenuSheet.svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { downloadManyWeb } from "$lib/download";
   import { formatDuration } from "$lib/songDisplay";
@@ -25,8 +34,11 @@
   let playingKey = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let menu = $state<{ x: number; y: number; item: SearchResultItem } | null>(null);
-  let selectedKeys = $state<Set<string>>(new Set());
-  let selectionAnchor = $state<number | null>(null);
+  let sheetOpen = $state(false);
+  let sheetItem = $state<SearchResultItem | null>(null);
+  const selection = new SelectionStore<SearchResultItem>(
+    (item) => item.platform + ":" + item.source_id,
+  );
   let bulkTagSongs = $state<Song[] | null>(null);
   let tagsByKey = $state<Record<string, SongTag[]>>({});
   let editingItemKey = $state<string | null>(null);
@@ -135,43 +147,52 @@
     return item.platform + ":" + item.source_id;
   }
   function selectedItems(): SearchResultItem[] {
-    return searchPage.results.filter((item) => selectedKeys.has(keyOf(item)));
+    return selection.items(searchPage.results);
   }
   function clearSearchSelection() {
-    selectedKeys = new Set();
-    selectionAnchor = null;
+    selection.clear();
   }
   function onSearchRowClick(item: SearchResultItem, index: number, e: MouseEvent) {
     if (e.ctrlKey || e.metaKey) {
-      const next = new Set(selectedKeys);
-      if (next.has(keyOf(item))) next.delete(keyOf(item));
-      else next.add(keyOf(item));
-      selectedKeys = next;
-      selectionAnchor = index;
+      selection.toggle(item, index);
       return;
     }
     if (e.shiftKey) {
-      const anchor = selectionAnchor ?? index;
-      const start = Math.min(anchor, index);
-      const end = Math.max(anchor, index);
-      const next = new Set(selectedKeys);
-      for (let i = start; i <= end; i += 1) {
-        const entry = searchPage.results[i];
-        if (entry) next.add(keyOf(entry));
-      }
-      selectedKeys = next;
-      selectionAnchor = index;
+      selection.selectRange(searchPage.results, index);
       return;
     }
-    if (selectedKeys.size > 0) clearSearchSelection();
+    if (selection.size > 0) clearSearchSelection();
     void playResult(item);
   }
   function onSearchRowContext(item: SearchResultItem, index: number, e: MouseEvent) {
-    if (!selectedKeys.has(keyOf(item))) {
-      selectedKeys = new Set([keyOf(item)]);
-      selectionAnchor = index;
+    if (!selection.has(item)) {
+      selection.setKeys([keyOf(item)]);
+      selection.anchor = index;
     }
     openMenu(e, item);
+  }
+
+  /** Touch: long-press enters selection mode and selects the row. */
+  function onSearchLongPress(item: SearchResultItem, index: number) {
+    if (!selection.has(item)) selection.setChecked(item, true, index);
+    selection.anchor = index;
+  }
+
+  /** Touch tap: toggle while selecting, otherwise play. */
+  function onSearchPress(item: SearchResultItem, index: number) {
+    if (selection.size > 0) selection.toggle(item, index);
+    else void playResult(item);
+  }
+
+  function openSheet(item: SearchResultItem) {
+    sheetItem = item;
+    sheetOpen = true;
+  }
+
+  function openBulkSheet() {
+    const first = selectedItems()[0];
+    if (!first) return;
+    openSheet(first);
   }
   async function resolveSelected(): Promise<Song[]> {
     const songs: Song[] = [];
@@ -239,15 +260,17 @@
   }
 
   let platforms = $derived(platformsFrom(pluginState));
-  let pageResults = $derived(
-    searchPage.results.slice(
-      (searchPage.page - 1) * searchPage.pageSize,
-      searchPage.page * searchPage.pageSize,
-    ),
-  );
-  let totalPages = $derived(
-    Math.max(1, Math.ceil(searchPage.results.length / searchPage.pageSize)),
-  );
+
+  // "Load more" instead of pages: the result set is fetched once (limit 60),
+  // so paging is purely a rendering decision.
+  const PAGE_STEP = 20;
+  let visibleCount = $state(PAGE_STEP);
+  let visibleResults = $derived(searchPage.results.slice(0, visibleCount));
+  let hasMore = $derived(visibleCount < searchPage.results.length);
+
+  function loadMore() {
+    visibleCount = Math.min(searchPage.results.length, visibleCount + PAGE_STEP);
+  }
 
   function isHttpUrl(value: string): boolean {
     try {
@@ -302,7 +325,7 @@
     actionError = null;
     searchPage.results = [];
     searchPage.searched = true;
-    searchPage.page = 1;
+    visibleCount = PAGE_STEP;
     searchPage.urlMode = isHttpUrl(q);
     try {
       if (searchPage.urlMode) {
@@ -491,23 +514,39 @@
     }
   }
 
-  async function proxyCover(event: Event, item: SearchResultItem) {
-    const img = event.currentTarget as HTMLImageElement;
+  /** Platform-specific referer for covers that reject hotlinking. */
+  function coverReferer(item: SearchResultItem): string | null {
+    return item.platform === "bilibili" ? "https://www.bilibili.com/" : null;
+  }
+
+  /**
+   * Cover URL to try first. On the web the server proxy URL is known
+   * synchronously, so bilibili covers skip the failing direct request.
+   */
+  function coverSrc(item: SearchResultItem): string {
+    if (!item.cover_url) return "";
+    const proxy = remoteImageUrl(item.cover_url, coverReferer(item) ?? undefined);
+    return item.platform === "bilibili" && proxy ? proxy : item.cover_url;
+  }
+
+  async function proxyCoverImage(img: HTMLImageElement, item: SearchResultItem) {
     if (img.dataset.proxied) {
       img.style.display = "none";
       return;
     }
     img.dataset.proxied = "1";
     try {
-      const referer =
-        item.platform === "bilibili" ? "https://www.bilibili.com/" : null;
       img.src = await invoke<string>("fetch_remote_image", {
         url: item.cover_url,
-        referer,
+        referer: coverReferer(item),
       });
     } catch {
       img.style.display = "none";
     }
+  }
+
+  function proxyCover(event: Event, item: SearchResultItem) {
+    void proxyCoverImage(event.currentTarget as HTMLImageElement, item);
   }
 
   function openMenu(event: MouseEvent, item: SearchResultItem) {
@@ -517,9 +556,9 @@
   }
 
   function menuItems(item: SearchResultItem): MenuItem[] {
-    if (selectedKeys.size > 1 && selectedKeys.has(keyOf(item))) {
+    if (selection.size > 1 && selection.has(item)) {
       return [
-        { label: "下载 " + selectedKeys.size + " 首", icon: Download, action: () => void bulkSearchDownload() },
+        { label: "下载 " + selection.size + " 首", icon: Download, action: () => void bulkSearchDownload() },
         { label: "编辑标签", icon: TagIcon, action: () => void bulkSearchTag() },
         { label: "取消多选", icon: X, action: clearSearchSelection },
       ];
@@ -531,6 +570,8 @@
       { label: "下载", icon: Download, action: () => openDownload(item) },
     ];
   }
+
+  let sheetMenuItems = $derived(sheetItem ? menuItems(sheetItem) : []);
 
   function useHistory(value: string) {
     searchPage.query = value;
@@ -545,10 +586,6 @@
     if (e.key === "Enter") doSearch();
   }
 
-  function goPage(next: number) {
-    searchPage.page = Math.max(1, Math.min(totalPages, next));
-  }
-
   $effect(() => {
     const q = $page.url.searchParams.get("q");
     if (q !== null && q !== searchPage.query) {
@@ -557,7 +594,7 @@
   });
 </script>
 
-<div class="search-view">
+<div class="search-view" class:mobile={platform.mobileUI}>
   <div class="source-tabs">
     {#each platforms as p}
       <button
@@ -602,91 +639,122 @@
       <p>{searchPage.error}</p>
     </div>
   {:else if searchPage.results.length > 0}
-    <div class="results" bind:this={resultsEl}>
-      <div class="table-header" oncontextmenu={openColumnMenu}>
-        {#each columns as column (column.id)}
-          <div
-            class="th"
-            style={columnStyle(column.id)}
-            draggable="true"
-            ondragstart={(e) => startColumnDrag(e, column.id)}
-            ondragover={(e) => dragColumnOver(e, column.id)}
-            ondragleave={dragColumnLeave}
-            ondrop={(e) => dropColumn(e, column.id)}
-            ondragend={endColumnDrag}
-            title="拖动调序，右键显示/隐藏列"
-          >
-            <span class="th-label">{column.id === "index" ? "#" : column.label}</span>
-            {#if !column.fixed}
-              <div class="resize-handle" onpointerdown={(e) => startColumnResize(e, column)} title="拖动调宽"></div>
-            {/if}
-          </div>
-        {/each}
-        <div class="col-filler"></div>
+    {#if platform.mobileUI}
+      <div class="mobile-results">
+        <div class="search-bar">
+          {#if selection.size > 0}
+            <button class="bar-btn" onclick={clearSearchSelection}>取消</button>
+            <span class="bar-title">已选 {selection.size} 首</span>
+            <button class="bar-btn" onclick={() => selection.selectAll(visibleResults)}>全选</button>
+            <button class="bar-btn" onclick={openBulkSheet}>操作</button>
+          {:else}
+            <span class="bar-title">
+              {visibleResults.length} / {searchPage.results.length} 首
+            </span>
+            <button class="bar-btn" onclick={() => void doSearch()}>刷新</button>
+          {/if}
+        </div>
+
+        <MobileSearchList
+          results={visibleResults}
+          {playingKey}
+          {selection}
+          {tagsByKey}
+          {platformLabel}
+          {coverSrc}
+          onpress={onSearchPress}
+          onmenu={openSheet}
+          onlongpress={onSearchLongPress}
+          oncovererror={(item, img) => void proxyCoverImage(img, item)}
+        />
+
+        {#if hasMore}
+          <button class="load-more" onclick={loadMore}>
+            加载更多（剩余 {searchPage.results.length - visibleResults.length} 首）
+          </button>
+        {/if}
       </div>
-      {#each pageResults as item, i}
-        <div
-          class="song-row"
-          class:playing={playingKey === item.platform + ":" + item.source_id}
-          role="button"
-          tabindex="0"
-          onclick={(e) => onSearchRowClick(item, i, e)}
-          onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}
-          oncontextmenu={(e) => onSearchRowContext(item, i, e)}
-        >
+    {:else}
+      <div class="results" bind:this={resultsEl}>
+        <div class="table-header" oncontextmenu={openColumnMenu}>
           {#each columns as column (column.id)}
-            <div class="td" style={columnStyle(column.id)}>
-              {#if column.id === "index"}
-                {#if selectedKeys.size > 0}
-                  <input
-                    type="checkbox"
-                    class="row-check"
-                    checked={selectedKeys.has(keyOf(item))}
-                    onclick={(e) => e.stopPropagation()}
-                    onchange={(e) => {
-                      const next = new Set(selectedKeys);
-                      if (e.currentTarget.checked) next.add(keyOf(item));
-                      else next.delete(keyOf(item));
-                      selectedKeys = next;
-                      selectionAnchor = i;
-                    }}
-                  />
-                {:else if item.cover_url}
-                  <img class="row-cover" src={item.cover_url} alt="" loading="lazy" referrerpolicy="no-referrer" onerror={(e) => void proxyCover(e, item)} />
-                {:else}
-                  <span class="cell-num">{(searchPage.page - 1) * searchPage.pageSize + i + 1}</span>
-                {/if}
-              {:else if column.id === "title"}
-                <div class="name-cell">
-                  <span class="name-text">{item.title}</span>
-                  <span class="tag-badge">{platformLabel(item.platform)}</span>
-                </div>
-              {:else if column.id === "tag"}
-                <div class="tag-cell">
-                  {#each tagsByKey[keyOf(item)] ?? [] as tag}
-                    <span class="tag-pill">{tag.namespace}:{tag.value}</span>
-                  {/each}
-                </div>
-              {:else if column.id === "artist"}
-                <span class="cell-text">{item.artist || ""}</span>
-              {:else if column.id === "album"}
-                <span class="cell-text">{item.album || ""}</span>
-              {:else if column.id === "duration"}
-                <span class="cell-time">{item.duration ? formatDuration(item.duration) : ""}</span>
+            <div
+              class="th"
+              style={columnStyle(column.id)}
+              draggable="true"
+              ondragstart={(e) => startColumnDrag(e, column.id)}
+              ondragover={(e) => dragColumnOver(e, column.id)}
+              ondragleave={dragColumnLeave}
+              ondrop={(e) => dropColumn(e, column.id)}
+              ondragend={endColumnDrag}
+              title="拖动调序，右键显示/隐藏列"
+            >
+              <span class="th-label">{column.id === "index" ? "#" : column.label}</span>
+              {#if !column.fixed}
+                <div class="resize-handle" onpointerdown={(e) => startColumnResize(e, column)} title="拖动调宽"></div>
               {/if}
             </div>
           {/each}
           <div class="col-filler"></div>
         </div>
-      {/each}
-      {#if totalPages > 1}
-        <div class="pager">
-          <button class="page-btn" disabled={searchPage.page <= 1} onclick={() => goPage(searchPage.page - 1)}>上一页</button>
-          <span class="page-label">第 {searchPage.page} / {totalPages} 页</span>
-          <button class="page-btn" disabled={searchPage.page >= totalPages} onclick={() => goPage(searchPage.page + 1)}>下一页</button>
-        </div>
-      {/if}
-    </div>
+        {#each visibleResults as item, i}
+          <div
+            class="song-row"
+            class:playing={playingKey === item.platform + ":" + item.source_id}
+            role="button"
+            tabindex="0"
+            onclick={(e) => onSearchRowClick(item, i, e)}
+            onkeydown={(e) => { if (e.key === "Enter") playResult(item); }}
+            oncontextmenu={(e) => onSearchRowContext(item, i, e)}
+          >
+            {#each columns as column (column.id)}
+              <div class="td" style={columnStyle(column.id)}>
+                {#if column.id === "index"}
+                  {#if selection.size > 0}
+                    <input
+                      type="checkbox"
+                      class="row-check"
+                      checked={selection.has(item)}
+                      onclick={(e) => e.stopPropagation()}
+                      onchange={(e) => selection.setChecked(item, e.currentTarget.checked, i)}
+                    />
+                  {:else if item.cover_url}
+                    <img class="row-cover" src={coverSrc(item)} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror={(e) => void proxyCover(e, item)} />
+                  {:else}
+                    <span class="cell-num">{i + 1}</span>
+                  {/if}
+                {:else if column.id === "title"}
+                  <div class="name-cell">
+                    <span class="name-text">{item.title}</span>
+                    <span class="tag-badge">{platformLabel(item.platform)}</span>
+                  </div>
+                {:else if column.id === "tag"}
+                  <div class="tag-cell">
+                    {#each tagsByKey[keyOf(item)] ?? [] as tag}
+                      <span class="tag-pill">{tag.namespace}:{tag.value}</span>
+                    {/each}
+                  </div>
+                {:else if column.id === "artist"}
+                  <span class="cell-text">{item.artist || ""}</span>
+                {:else if column.id === "album"}
+                  <span class="cell-text">{item.album || ""}</span>
+                {:else if column.id === "duration"}
+                  <span class="cell-time">{item.duration ? formatDuration(item.duration) : ""}</span>
+                {/if}
+              </div>
+            {/each}
+            <div class="col-filler"></div>
+          </div>
+        {/each}
+        {#if hasMore}
+          <div class="pager">
+            <button class="page-btn" onclick={loadMore}>
+              加载更多（剩余 {searchPage.results.length - visibleResults.length} 首）
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
   {:else}
     <div class="state">
       <Search size={28} class="empty-icon" />
@@ -700,6 +768,9 @@
 {/if}
 {#if columnMenu}
   <ContextMenu items={columnMenuItems} x={columnMenu.x} y={columnMenu.y} onclose={() => (columnMenu = null)} />
+{/if}
+{#if sheetOpen && sheetItem && sheetMenuItems.length > 0}
+  <MenuSheet bind:open={sheetOpen} title={sheetItem.title} items={sheetMenuItems} />
 {/if}
 {#if editingSong}
   <TagEditor song={editingSong} onclose={() => void closeTagEditor()} />
@@ -735,6 +806,93 @@
     gap: 10px;
   }
 
+  /* Phone: no padding; the result list scrolls itself, while history/error
+     states still scroll the page when they are taller than the viewport. */
+  .search-view.mobile {
+    padding: 0;
+    gap: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .search-view.mobile .source-tabs {
+    padding: 8px 10px 6px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+
+  /* Keep each platform tab on one line; the row scrolls instead of shrinking. */
+  .search-view.mobile .tab {
+    flex: none;
+    white-space: nowrap;
+  }
+  .search-view.mobile .source-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .search-view.mobile .history-section,
+  .search-view.mobile .state,
+  .search-view.mobile .action-error {
+    margin: 0 12px;
+  }
+
+  .mobile-results {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .search-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 40px;
+    padding: 0 6px 0 12px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+
+  .bar-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bar-btn {
+    flex: none;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 7px;
+    background: var(--color-base-200);
+    color: color-mix(in oklch, var(--color-base-content) 85%, transparent);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .bar-btn:active {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+
+  .load-more {
+    flex: none;
+    height: 44px;
+    margin: 6px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 9px;
+    background: var(--color-base-200);
+    color: var(--color-primary);
+    font-size: 13px;
+    cursor: pointer;
+  }
+
   .source-tabs {
     display: flex;
     gap: 2px;
@@ -757,56 +915,6 @@
   .tab.active {
     color: var(--color-base-content);
     border-bottom-color: var(--color-base-content);
-  }
-
-  .inline-search {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-shrink: 0;
-  }
-
-  .inline-input {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 34px;
-    padding: 0 12px;
-    background: var(--color-base-200);
-    border: 1px solid var(--color-base-300);
-    border-radius: 6px;
-  }
-
-  .inline-input:focus-within {
-    border-color: var(--color-primary);
-  }
-
-  .inline-icon {
-    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
-  }
-
-  .inline-input input {
-    flex: 1;
-    background: none;
-    border: none;
-    color: var(--color-base-content);
-    font-size: 13px;
-    outline: none;
-    user-select: text;
-  }
-
-  .search-btn {
-    padding: 8px 18px;
-    border-radius: 6px;
-    background: var(--color-primary);
-    color: var(--color-primary-content);
-    font-size: 13px;
-    border: none;
-  }
-
-  .search-btn:disabled {
-    opacity: 0.5;
   }
 
   .action-error {
@@ -1078,11 +1186,6 @@
     gap: 12px;
     padding: 12px 0 4px;
     margin-top: auto;
-  }
-
-  .page-label {
-    font-size: 12px;
-    color: color-mix(in oklch, var(--color-base-content) 60%, transparent);
   }
 
   .page-btn {

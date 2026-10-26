@@ -53,6 +53,26 @@ export function subscribePlayerStatus(
   return () => source.close();
 }
 
+/**
+ * Proxy URL for a remote cover, when it is known synchronously.
+ *
+ * The web client (same origin) and the remote client both go through the
+ * server's `/api/v1/image` proxy, which applies the referer and caches the
+ * bytes. Local Tauri has no HTTP server, so it returns null and the caller
+ * falls back to the `fetch_remote_image` command.
+ */
+export function remoteImageUrl(url: string, referer?: string): string | null {
+  if (!url) return null;
+  if (isTauri && !remote) return null;
+  const base = remote?.baseUrl ?? "";
+  return (
+    base +
+    "/api/v1/image?url=" +
+    encodeURIComponent(url) +
+    (referer ? "&referer=" + encodeURIComponent(referer) : "")
+  );
+}
+
 export function downloadTarget(id: string): { url: string; headers: Record<string, string> } | null {
   if (remote) {
     return {

@@ -423,15 +423,37 @@ struct ImageQuery {
     referer: Option<String>,
 }
 
+/// Serve one cover through the server proxy.
+///
+/// Covers are cached on disk (keyed by URL + referer) so every client of this
+/// server, not just the browser that fetched it first, gets the local copy.
+/// The browser still applies its own HTTP cache on top.
 async fn image_proxy(Query(query): Query<ImageQuery>) -> Result<Response, StatusCode> {
     if !query.url.starts_with("http://") && !query.url.starts_with("https://") {
         return Err(StatusCode::BAD_REQUEST);
     }
+
+    let key = blake3::hash(
+        format!("{}|{}", query.url, query.referer.as_deref().unwrap_or("")).as_bytes(),
+    )
+    .to_hex()
+    .to_string();
+    let dir = crate::features::ui::image_cache_dir();
+    let data_path = dir.join(&key);
+    let type_path = dir.join(format!("{key}.type"));
+
+    if let (Ok(bytes), Ok(content_type)) = (
+        tokio::fs::read(&data_path).await,
+        tokio::fs::read_to_string(&type_path).await,
+    ) {
+        return image_response(content_type.trim(), bytes);
+    }
+
     let client = reqwest::Client::new();
     let mut request = client
         .get(&query.url)
         .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-    if let Some(referer) = query.referer {
+    if let Some(referer) = &query.referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
     let response = request.send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -447,7 +469,21 @@ async fn image_proxy(Query(query): Query<ImageQuery>) -> Result<Response, Status
     if !content_type.starts_with("image/") {
         return Err(StatusCode::BAD_GATEWAY);
     }
-    let bytes = response.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?
+        .to_vec();
+
+    // Best effort: a read-only cache directory must not break image loading.
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let _ = tokio::fs::write(&data_path, &bytes).await;
+    let _ = tokio::fs::write(&type_path, &content_type).await;
+
+    image_response(&content_type, bytes)
+}
+
+fn image_response(content_type: &str, bytes: Vec<u8>) -> Result<Response, StatusCode> {
     Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "public, max-age=86400")

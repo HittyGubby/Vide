@@ -1626,7 +1626,7 @@ pub struct CacheStat {
     pub size: Option<u64>,
 }
 
-fn image_cache_dir() -> PathBuf {
+pub(crate) fn image_cache_dir() -> PathBuf {
     crate::app_data_dir().join("cache").join("images")
 }
 
@@ -1640,6 +1640,11 @@ async fn dir_stats(dir: &Path) -> (u64, u64) {
     let mut size = 0u64;
     if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
         while let Ok(Some(entry)) = rd.next_entry().await {
+            // The image cache stores a `.type` sidecar next to each image;
+            // it is not a cache entry of its own.
+            if entry.path().extension().and_then(|value| value.to_str()) == Some("type") {
+                continue;
+            }
             if let Ok(meta) = entry.metadata().await {
                 if meta.is_file() {
                     count += 1;
@@ -1739,15 +1744,12 @@ pub async fn clear_cache_kind(
         "image" => {
             let dir = image_cache_dir();
             let (count, _) = dir_stats(&dir).await;
-            let mut removed = 0u64;
             if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
                 while let Ok(Some(entry)) = rd.next_entry().await {
-                    if tokio::fs::remove_file(entry.path()).await.is_ok() {
-                        removed += 1;
-                    }
+                    let _ = tokio::fs::remove_file(entry.path()).await;
                 }
             }
-            Ok(removed.max(count))
+            Ok(count)
         }
         "audio" => {
             let entries = state
