@@ -71,9 +71,7 @@
   }
 </script>
 
-<section class="group">
-  <h2 class="group-title">远程连接</h2>
-  <div class="setting-card remote-card">
+<div class="remote-body">
     {#if isRemoteMode() && current}
       <div class="remote-current">
         <span class="dot"></span>
@@ -108,13 +106,10 @@
       </div>
       {#if error}<p class="error">{error}</p>{/if}
     {/if}
-  </div>
-</section>
+</div>
 
 <style>
-  .group { display: flex; flex-direction: column; gap: 8px; }
-  .group-title { font-size: 14px; font-weight: 700; color: var(--color-primary); padding-bottom: 6px; border-bottom: 1px solid var(--panel-border); }
-  .setting-card { background: var(--color-base-200); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .remote-body { display: flex; flex-direction: column; gap: 8px; }
   .remote-form { display: flex; gap: 6px; flex-wrap: wrap; }
   .remote-form input { flex: 1 1 220px; padding: 6px 9px; border: 1px solid var(--color-base-300); border-radius: 5px; background: var(--color-base-100); color: inherit; font: inherit; }
   .remote-form input:focus { outline: none; border-color: var(--color-primary); }

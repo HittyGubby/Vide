@@ -1,6 +1,6 @@
 # Vide 移动端 Web 视图与模块化计划
 
-> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）。下一步 P3：设置切片。
+> 状态：P0 ✅、P1 ✅（曲库）、P2 ✅（搜索）、P3 ✅（设置导航与分区）。下一步 P4：`/player`。
 > 按 P0 → P5 顺序推进。
 > 范围：手机浏览器的响应式 Web 视图（含 PWA 之外的移动体验）；**不做** Tauri 移动端、**不做** PWA/Service Worker/离线/IndexedDB。
 
@@ -127,7 +127,8 @@ src/lib/
 | P0 ✅ | 文档、platform 层、壳拆分、弹层原语、CSS 修复、列布局共享模块、added_time/tag 历史、清理。`selection / actions / virtual` 随 P1 一起抽 | 桌面外观不变、`bun run check` 通过 |
 | P1 ✅ | 曲库纵向切片：数据 store、共享列/选择/虚拟/动作模块、移动列表、MiniPlayer、排序/操作 sheet、移除 TanStack、桌面紧凑化（34px 行高 / 30px 表头 / 6px 内边距） | 手机可用完整曲库 |
 | P2 ✅ | 搜索切片：通用 `VirtualMobileList`（曲库与搜索结果共用滚动/虚拟/手势）、移动搜索结果行（封面 · 平台/歌手/专辑/标签）、加载更多、选择态与底部动作面板；封面懒加载 + bilibili 直接走代理；服务端图片磁盘缓存（url+referer 为键，`.type` sidecar，缓存统计不再计 sidecar） | 手机可搜索、加载更多、播放与编辑 |
-| P3 | 设置切片（`?section=`）、PluginSettings/TagEditor 拆分 | 手机可配置 |
+| P3 ✅ | 设置切片：单路由 + 移动端分类列表 / `?section=` 两级、桌面 sticky 分区导航 + 滚动高亮；10 个分区组件 + 共享 `SettingsGroup/SettingCard/SettingRow/SettingToggle`；PluginSettings 与 RemoteConnection 改为纯内容组件；表单从 table 改为响应式行式布局 | 手机可逐项配置 |
+| P3b | PluginSettings（插件行/详情/路由/安装表单）与 TagEditor（已选/历史/目录/输入）的内部拆分，纯维护性重构，不改行为 | 文件行数下降、行为不变 |
 | P4 | `/player` 路由 + 移动端播放详情（封面/歌词分页） | 手机播放页可用 |
 | P5 | 性能：Monaco 移除、压缩/缓存头、payload 瘦身、虚拟列表、预加载 | Lighthouse / 传输体积下降 |
 

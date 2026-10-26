@@ -368,14 +368,13 @@
   });
 </script>
 
-<section class="group">
-  <h2 class="group-title">
-    <span>插件</span>
+<div class="plugin-body">
+  <div class="plugin-toolbar">
     <button class="btn-mini" onclick={() => void loadPlugins(true)} disabled={loading || busy !== null}>
       <RefreshCw size={13} class={loading ? "spin" : ""} />
       <span>{loading ? "扫描中" : "重新扫描"}</span>
     </button>
-  </h2>
+  </div>
 
   {#if error}
     <div class="notice error">
@@ -387,8 +386,8 @@
     <div class="notice ok"><Check size={14} /><span>{note}</span></div>
   {/if}
 
-  <div class="card">
-    <div class="card-head">
+  <div class="plugin-card">
+    <div class="plugin-card-head">
       <div>
         <h3>已安装插件</h3>
         <p class="hint">把插件文件夹放入插件目录后点“重新扫描”，无需重启应用。</p>
@@ -522,8 +521,8 @@
     {/if}
   </div>
 
-  <div class="card">
-    <div class="card-head">
+  <div class="plugin-card">
+    <div class="plugin-card-head">
       <div>
         <h3>平台路由</h3>
         <p class="hint">每个平台每个能力只选一个 provider；列表顺序就是 fallback 顺序。</p>
@@ -638,26 +637,19 @@
       </div>
     {/if}
   </div>
-</section>
+</div>
 
 <style>
-  .group {
+  .plugin-body {
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
-  .group-title {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--color-primary);
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--panel-border);
+  .plugin-toolbar {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    justify-content: flex-end;
   }
-  .card {
+  .plugin-card {
     background: var(--color-base-200);
     border: 1px solid var(--panel-border);
     border-radius: 8px;
@@ -667,13 +659,13 @@
     gap: 8px;
     min-width: 0;
   }
-  .card-head {
+  .plugin-card-head {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
   }
-  .card-head h3 {
+  .plugin-card-head h3 {
     margin: 0;
     font-size: 13px;
     font-weight: 600;
