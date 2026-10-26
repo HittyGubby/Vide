@@ -376,7 +376,7 @@
         searchPage.results = await invoke<SearchResultItem[]>("search_online", {
           query: q,
           platform: searchPage.activePlatform,
-          limit: 60,
+          limit: 100,
         });
       }
       if (searchPage.results.length === 0) {

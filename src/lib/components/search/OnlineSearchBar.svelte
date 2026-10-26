@@ -16,11 +16,19 @@
     open = true;
   }
 
-  function hideHistory(event: FocusEvent) {
-    const next = event.relatedTarget as Node | null;
-    if (wrapEl && next && wrapEl.contains(next)) return;
-    open = false;
-  }
+  // Close only when the pointer lands outside the whole search box. Tapping
+  // the panel itself (including its blank space) keeps it visible, so the
+  // keyboard/autocomplete can be dismissed without losing the history.
+  $effect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!wrapEl || (target && wrapEl.contains(target))) return;
+      open = false;
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  });
 
   function use(value: string) {
     searchPage.query = value;
@@ -34,9 +42,14 @@
     type="text"
     placeholder="搜索歌曲或粘贴链接..."
     bind:value={searchPage.query}
+    autocomplete="off"
+    autocapitalize="off"
+    spellcheck="false"
     onfocus={showHistory}
-    onblur={hideHistory}
-    onkeydown={(e) => { if (e.key === "Enter") submit(); }}
+    onkeydown={(e) => {
+      if (e.key === "Enter") submit();
+      else if (e.key === "Escape") open = false;
+    }}
   />
   {#if searchPage.loading}<Loader size={14} class="spin" />{/if}
   <button onclick={submit} disabled={!searchPage.query.trim()}>搜索</button>
@@ -46,7 +59,14 @@
     <div
       class="panel"
       role="listbox"
-      onmousedown={(e) => e.preventDefault()}
+      onpointerdown={(event) => {
+        // A tap on the panel's blank space drops focus (hiding the native
+        // keyboard/autocomplete) but is not a reason to close the history.
+        const target = event.target as HTMLElement | null;
+        if (target && !target.closest("button")) {
+          (document.activeElement as HTMLElement | null)?.blur();
+        }
+      }}
     >
       <div class="panel-head">
         <span class="panel-title"><History size={12} /> 搜索历史</span>

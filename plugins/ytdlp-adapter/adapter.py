@@ -65,39 +65,57 @@ def parse_duration(value):
 
 
 def bilibili_search(query, limit):
-    url = (
-        "https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword="
-        + urllib.parse.quote(query)
-        + "&page=1&page_size="
-        + str(limit)
-    )
-    try:
-        body = bili_json(url)
-    except Exception as error:
-        return {"error": "bilibili search: " + str(error)}
-    if body.get("code") != 0:
-        return {"error": "bilibili search: " + str(body.get("message"))}
+    # The API caps one page at 50; walk pages until the requested count is met.
     items = []
-    for entry in (body.get("data") or {}).get("result") or []:
-        if not isinstance(entry, dict):
-            continue
-        bvid = entry.get("bvid")
-        if not bvid:
-            continue
-        pic = entry.get("pic") or ""
-        if pic.startswith("//"):
-            pic = "https:" + pic
-        items.append(
-            {
-                "platform": "bilibili",
-                "source_id": bvid,
-                "title": clean_html(entry.get("title")),
-                "artist": entry.get("author") or "",
-                "duration": parse_duration(entry.get("duration")),
-                "cover_url": pic or None,
-            }
+    seen = set()
+    page = 1
+    page_size = min(max(limit, 1), 50)
+    while len(items) < limit and page <= 10:
+        url = (
+            "https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword="
+            + urllib.parse.quote(query)
+            + "&page="
+            + str(page)
+            + "&page_size="
+            + str(page_size)
         )
-    return items
+        try:
+            body = bili_json(url)
+        except Exception as error:
+            if items:
+                break
+            return {"error": "bilibili search: " + str(error)}
+        if body.get("code") != 0:
+            if items:
+                break
+            return {"error": "bilibili search: " + str(body.get("message"))}
+        entries = (body.get("data") or {}).get("result") or []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            bvid = entry.get("bvid")
+            if not bvid or bvid in seen:
+                continue
+            seen.add(bvid)
+            pic = entry.get("pic") or ""
+            if pic.startswith("//"):
+                pic = "https:" + pic
+            items.append(
+                {
+                    "platform": "bilibili",
+                    "source_id": bvid,
+                    "title": clean_html(entry.get("title")),
+                    "artist": entry.get("author") or "",
+                    "duration": parse_duration(entry.get("duration")),
+                    "cover_url": pic or None,
+                }
+            )
+            if len(items) >= limit:
+                break
+        if len(entries) < page_size:
+            break
+        page += 1
+    return items[:limit]
 
 
 def bilibili_resolve(bvid):
@@ -173,7 +191,7 @@ def youtube_id_from_url(url):
 def handle_search(params):
     query = params.get("query", params.get("q", ""))
     platform = params.get("platform", "youtube")
-    limit = min(max(int(params.get("limit") or 10), 1), 30)
+    limit = max(int(params.get("limit") or 10), 1)
     if not query:
         return []
     if platform == "bilibili":

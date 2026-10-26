@@ -329,21 +329,7 @@ function parseUrl(raw) {
 
 // ── Actions ───────────────────────────────────────────────────────
 
-async function search(params) {
-  const platform = params.platform;
-  const query = params.query || params.q || '';
-  const limit = Math.min(Math.max(Number(params.limit) || 20, 1), 30);
-  if (!query) return [];
-
-  if (platform === 'kuwo') {
-    return kuwoSearch(query, limit);
-  }
-  if (!['netease', 'tencent', 'kugou'].includes(platform)) {
-    throw new Error('unsupported platform: ' + platform);
-  }
-  const instance = rawMeting(platform);
-  const raw = await instance.search(query, { page: 1, limit });
-  const data = parseJson(raw);
+function mapSearchTracks(platform, data) {
   if (platform === 'netease') {
     return ((data?.result?.songs) || []).map(neteaseTrack).filter(Boolean);
   }
@@ -354,6 +340,43 @@ async function search(params) {
     return ((data?.data?.info) || []).map(kugouTrack).filter(Boolean);
   }
   return [];
+}
+
+async function search(params) {
+  const platform = params.platform;
+  const query = params.query || params.q || '';
+  // The caller decides how many results it wants; never cap below that.
+  const limit = Math.max(Number(params.limit) || 20, 1);
+  if (!query) return [];
+
+  if (platform === 'kuwo') {
+    return kuwoSearch(query, limit);
+  }
+  if (!['netease', 'tencent', 'kugou'].includes(platform)) {
+    throw new Error('unsupported platform: ' + platform);
+  }
+  const instance = rawMeting(platform);
+  // Tencent/Kugou return at most 30 rows per page; walk pages so the caller's
+  // limit is respected. Netease accepts the full limit in one request.
+  const paged = platform === 'tencent' || platform === 'kugou';
+  const pageSize = paged ? Math.min(limit, 30) : limit;
+  const pageCount = paged ? Math.max(1, Math.ceil(limit / pageSize)) : 1;
+  const tracks = [];
+  const seen = new Set();
+
+  for (let page = 1; page <= pageCount && tracks.length < limit; page += 1) {
+    const raw = await instance.search(query, { page, limit: pageSize });
+    const pageTracks = mapSearchTracks(platform, parseJson(raw));
+    for (const track of pageTracks) {
+      const key = track.source_id || track.id || JSON.stringify(track);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tracks.push(track);
+      if (tracks.length >= limit) break;
+    }
+    if (pageTracks.length < pageSize) break;
+  }
+  return tracks.slice(0, limit);
 }
 
 async function resolve(params) {
