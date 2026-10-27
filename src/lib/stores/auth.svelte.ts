@@ -12,6 +12,9 @@ let markAuthReady: () => void = () => {};
 export const authReady = new Promise<void>((resolve) => {
   markAuthReady = resolve;
 });
+// The Tauri app never calls refreshAuth (it has no cookie session); without
+// this the history/query stores would await authReady forever.
+if (isTauri) markAuthReady();
 
 /** Refresh the browser cookie session state. No-op on Tauri. */
 export async function refreshAuth(): Promise<void> {
