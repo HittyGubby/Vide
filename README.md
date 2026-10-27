@@ -26,6 +26,7 @@ Vide 是一个本地优先的音乐库与播放器，使用 Tauri 2 + Svelte 5 +
 - Rust stable
 - Tauri Linux 依赖
 - 服务端播放需要 `mpv`
+- 跳过静音/音量均衡分析需要 `ffmpeg`（缺失时自动跳过分析，不影响播放）
 - 插件按需提供 `python` / `yt-dlp` 等
 
 ## 本地桌面

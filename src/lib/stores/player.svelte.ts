@@ -7,6 +7,8 @@ import {
   subscribePlayerStatus,
 } from "$lib/transport";
 import { isTauri } from "$lib/isTauri";
+import { settingsStore } from "$lib/stores/settings.svelte";
+import type { SongAnalysis } from "$lib/types";
 
 function isRemoteClient(): boolean {
   return isRemoteMode() && getPlaybackTarget() === "client";
@@ -120,6 +122,11 @@ class PlayerStore {
   _saveTick = 0;
   // If set, the next play should seek to this position (startup restore).
   _pendingSeek = 0;
+  // Client playback: the audible region of the current file (from analysis).
+  private trimStart = 0;
+  private trimEnd: number | null = null;
+  private audioCtx: AudioContext | null = null;
+  private audioGain: GainNode | null = null;
   private statusTimer: ReturnType<typeof setInterval> | undefined;
   private statusStream: (() => void) | null = null;
   private updatesStarted = false;
@@ -130,10 +137,21 @@ class PlayerStore {
       audio.preload = "auto";
       browserAudio = audio;
       audio.addEventListener("timeupdate", () => {
-        this.elapsed = audio.currentTime || 0;
+        const raw = audio.currentTime || 0;
+        if (this.trimEnd !== null && raw >= this.trimEnd - 0.05) {
+          const end = this.trimEnd;
+          this.trimEnd = null;
+          audio.pause();
+          this.elapsed = Math.max(0, end - this.trimStart);
+          this.isPlaying = false;
+          void this.playNext(true);
+          return;
+        }
+        this.elapsed = Math.max(0, raw - this.trimStart);
       });
       audio.addEventListener("durationchange", () => {
-        this.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+        const raw = Number.isFinite(audio.duration) ? audio.duration : 0;
+        this.duration = Math.max(0, (this.trimEnd ?? raw) - this.trimStart);
       });
       audio.addEventListener("play", () => {
         this.isPlaying = true;
@@ -147,6 +165,62 @@ class PlayerStore {
       });
     }
     return browserAudio;
+  }
+
+  private sameOrigin(url: string): boolean {
+    try {
+      return new URL(url, location.href).origin === location.origin;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Create the WebAudio graph for same-origin media. Called synchronously from
+   * the play gesture so the context is allowed to start before any await.
+   */
+  private ensureAudioGraph(audio: HTMLAudioElement, url: string): boolean {
+    if (this.audioCtx) {
+      void this.audioCtx.resume().catch(() => {});
+      return true;
+    }
+    if (!this.sameOrigin(url)) return false;
+    try {
+      const ctx = new AudioContext();
+      const source = ctx.createMediaElementSource(audio);
+      const gain = ctx.createGain();
+      source.connect(gain).connect(ctx.destination);
+      this.audioCtx = ctx;
+      this.audioGain = gain;
+      void ctx.resume().catch(() => {});
+      return true;
+    } catch (e) {
+      console.error("webaudio gain error:", e);
+      this.audioCtx = null;
+      this.audioGain = null;
+      return false;
+    }
+  }
+
+  /**
+   * Apply the per-track loudness gain. Same-origin media uses WebAudio so
+   * quiet tracks can be boosted; cross-origin media falls back to attenuation
+   * via the element volume.
+   */
+  private applyClientGain(audio: HTMLAudioElement, gainDb: number, url: string) {
+    const linear = Math.pow(10, gainDb / 20);
+    if (Math.abs(gainDb) < 0.05) {
+      if (this.audioGain) this.audioGain.gain.value = 1;
+      audio.volume = this.volume / 100;
+      return;
+    }
+    if (this.ensureAudioGraph(audio, url)) {
+      const gain = this.audioGain;
+      if (gain) gain.gain.value = linear;
+      audio.volume = this.volume / 100;
+      return;
+    }
+    audio.volume = Math.min(1, (this.volume / 100) * linear);
   }
 
   /** Set the active queue (the list the user is playing from) and register it
@@ -263,7 +337,7 @@ class PlayerStore {
     const position = Math.max(0, Math.min(this.duration, target));
     try {
       if (isBrowserClient()) {
-        this.browserAudioElement().currentTime = position;
+        this.browserAudioElement().currentTime = this.trimStart + position;
       } else {
         await statusInvoke("seek", { positionSecs: position });
       }
@@ -279,7 +353,7 @@ class PlayerStore {
     const target = Math.max(0, Math.min(this.duration, this.elapsed + delta));
     try {
       if (isBrowserClient()) {
-        this.browserAudioElement().currentTime = target;
+        this.browserAudioElement().currentTime = this.trimStart + target;
         this.elapsed = target;
         return;
       }
@@ -370,15 +444,73 @@ class PlayerStore {
         if (queueIndex >= 0) this.currentIndex = queueIndex;
         this.elapsed = 0;
         this.duration = 0;
+
+        // The analysis is cached server-side; a first online play may wait for
+        // the cache download + a short ffmpeg pass. Create the WebAudio graph
+        // before that await so the context starts inside the user gesture.
+        const settings = settingsStore.settings;
+        if (settings.normalize_loudness) {
+          this.ensureAudioGraph(audio, media.url);
+        }
+        let analysis: SongAnalysis | null = null;
+        if (settings.skip_silence || settings.normalize_loudness) {
+          try {
+            analysis = (await invoke<SongAnalysis | null>("get_song_analysis", {
+              songId: id,
+            })) ?? null;
+          } catch {
+            analysis = null;
+          }
+        }
+        this.trimStart =
+          settings.skip_silence && analysis ? Math.max(0, analysis.start_secs) : 0;
+        this.trimEnd =
+          settings.skip_silence &&
+          analysis &&
+          analysis.end_secs > analysis.start_secs + 0.5
+            ? analysis.end_secs
+            : null;
+        const gainDb =
+          settings.normalize_loudness && analysis?.lufs != null
+            ? Math.max(
+                -12,
+                Math.min(6, settings.loudness_target_lufs - analysis.lufs),
+              )
+            : 0;
+
         audio.src = media.url;
         audio.volume = this.volume / 100;
         audio.muted = this.muted;
         audio.playbackRate = this.speed;
-        await audio.play();
-        if (position > 0) {
-          audio.currentTime = position;
-          this.elapsed = position;
+        this.applyClientGain(audio, gainDb, media.url);
+
+        // Wait for metadata so the head-skip seek lands on the first frame.
+        if (audio.readyState < 1) {
+          await new Promise<void>((resolve) => {
+            let settled = false;
+            const done = () => {
+              if (settled) return;
+              settled = true;
+              audio.removeEventListener("loadedmetadata", done);
+              resolve();
+            };
+            audio.addEventListener("loadedmetadata", done, { once: true });
+            setTimeout(done, 2500);
+          });
         }
+        const startAt = this.trimStart + Math.max(0, position);
+        if (startAt > 0) {
+          try {
+            audio.currentTime = startAt;
+          } catch {
+            /* metadata not ready; play from the start */
+          }
+        }
+        this.elapsed = Math.max(0, position);
+        if (Number.isFinite(audio.duration)) {
+          this.duration = Math.max(0, (this.trimEnd ?? audio.duration) - this.trimStart);
+        }
+        await audio.play();
         try {
           const song = await invoke<{
             id: string;

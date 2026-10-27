@@ -524,6 +524,11 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
       return remoteRequest<T>("GET", "/api/v1/player/status");
     case "get_lyrics":
       return remoteRequest<T>("GET", "/api/v1/lyrics/" + encodeURIComponent(arg<string>(args, "songId")));
+    case "get_song_analysis":
+      return remoteRequest<T>(
+        "GET",
+        "/api/v1/analysis/" + encodeURIComponent(arg<string>(args, "songId", "id")),
+      );
     case "get_song_tags":
       return remoteRequest<T>(
         "GET",

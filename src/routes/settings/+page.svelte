@@ -11,6 +11,7 @@
     Keyboard,
     MessageSquareQuote,
     Palette,
+    Play,
     Plug,
     Server,
     Settings as SettingsIcon,
@@ -25,6 +26,7 @@
   import RemoteSection from "$lib/components/settings/sections/RemoteSection.svelte";
   import GeneralSection from "$lib/components/settings/sections/GeneralSection.svelte";
   import AppearanceSection from "$lib/components/settings/sections/AppearanceSection.svelte";
+  import PlaybackSection from "$lib/components/settings/sections/PlaybackSection.svelte";
   import ShortcutsSection from "$lib/components/settings/sections/ShortcutsSection.svelte";
   import CacheSection from "$lib/components/settings/sections/CacheSection.svelte";
   import DesktopLyricsSection from "$lib/components/settings/sections/DesktopLyricsSection.svelte";
@@ -47,6 +49,7 @@
     { id: "remote", label: "远程连接", icon: Server, available: () => isTauri, component: RemoteSection },
     { id: "general", label: "通用", icon: SlidersHorizontal, available: () => isTauri, component: GeneralSection },
     { id: "appearance", label: "外观", icon: Palette, available: () => true, component: AppearanceSection },
+    { id: "playback", label: "播放", icon: Play, available: () => true, component: PlaybackSection },
     { id: "shortcuts", label: "快捷键", icon: Keyboard, available: () => isTauri, component: ShortcutsSection },
     { id: "cache", label: "缓存管理", icon: HardDrive, available: () => canManage(), component: CacheSection },
     { id: "desktop-lyrics", label: "桌面歌词", icon: MessageSquareQuote, available: () => isTauri, component: DesktopLyricsSection },

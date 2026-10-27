@@ -25,27 +25,26 @@
 
 <SettingsGroup id="shortcuts" title="快捷键">
   <SettingCard>
-    {#each SHORTCUT_ACTIONS as item}
-      <div class="shortcut-row">
-        <span class="action">{item.label}</span>
-        <div class="keys">
-          <label class="key">
-            <span>应用内</span>
-            <ShortcutCell
-              value={settingsStore.settings.shortcuts[item.id].in_app}
-              onchange={(value) => void updateShortcut(item.id, "in_app", value)}
-            />
-          </label>
-          <label class="key">
-            <span>全局</span>
-            <ShortcutCell
-              value={settingsStore.settings.shortcuts[item.id].global}
-              onchange={(value) => void updateShortcut(item.id, "global", value)}
-            />
-          </label>
-        </div>
+    <div class="shortcut-grid">
+      <div class="shortcut-head">
+        <span class="head-action">动作</span>
+        <span class="head-key">应用内</span>
+        <span class="head-key">全局</span>
       </div>
-    {/each}
+      {#each SHORTCUT_ACTIONS as item}
+        <div class="shortcut-row">
+          <span class="action" title={item.label}>{item.label}</span>
+          <ShortcutCell
+            value={settingsStore.settings.shortcuts[item.id].in_app}
+            onchange={(value) => void updateShortcut(item.id, "in_app", value)}
+          />
+          <ShortcutCell
+            value={settingsStore.settings.shortcuts[item.id].global}
+            onchange={(value) => void updateShortcut(item.id, "global", value)}
+          />
+        </div>
+      {/each}
+    </div>
 
     <p class="hint">
       点击单元格后按下新的组合键即可修改；Backspace 清除，Esc 取消。全局快捷键在应用未获得焦点时同样生效。
@@ -85,12 +84,33 @@
 </SettingsGroup>
 
 <style>
-  .shortcut-row {
+  .shortcut-grid {
     display: flex;
+    flex-direction: column;
+  }
+  .shortcut-head,
+  .shortcut-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 110px 110px;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 7px 0;
+    gap: 10px;
+  }
+  .shortcut-head {
+    padding: 2px 0 6px;
+    border-bottom: 1px solid var(--panel-border);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
+  }
+  .head-key {
+    text-align: center;
+  }
+  .head-action {
+    min-width: 0;
+  }
+  .shortcut-row {
+    padding: 6px 0;
     border-bottom: 1px solid var(--panel-border);
     font-size: 13px;
   }
@@ -99,18 +119,12 @@
   }
   .action {
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .keys {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .key {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 10px;
-    color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
+  .shortcut-row :global(.sc-cell) {
+    width: 100%;
   }
   .hint {
     margin: 0;
@@ -144,14 +158,16 @@
   }
 
   @media (max-width: 560px) {
+    .shortcut-head,
     .shortcut-row {
-      align-items: flex-start;
-      flex-direction: column;
+      grid-template-columns: minmax(0, 1fr) 84px 84px;
       gap: 6px;
     }
-    .keys {
-      width: 100%;
-      justify-content: space-between;
+    .shortcut-head {
+      font-size: 9px;
+    }
+    .shortcut-row {
+      font-size: 12px;
     }
   }
 </style>

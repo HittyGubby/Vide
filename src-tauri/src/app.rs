@@ -66,7 +66,12 @@ impl AppState {
         // the startup auto-resume calls play_song without setting a queue, so
         // without this next/prev used to be no-ops until a manual list click
         // re-registered the queue.
-        let mut player_manager = PlayerManager::new(Some(db.clone()), plugins.clone());
+        let data_dir = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let mut player_manager =
+            PlayerManager::new(Some(db.clone()), plugins.clone(), data_dir);
         player_manager.restore_queue().await;
         let player = Arc::new(Mutex::new(player_manager));
 

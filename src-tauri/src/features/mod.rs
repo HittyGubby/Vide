@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod metadata;
 pub mod tags;
 pub mod cache;

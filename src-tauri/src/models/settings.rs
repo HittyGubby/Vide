@@ -121,6 +121,15 @@ pub struct AppSettings {
     /// File extensions included by the media scanner (without a dot).
     #[serde(default = "default_scan_extensions")]
     pub scan_extensions: Vec<String>,
+    /// Skip leading/trailing silence using the server-side audio analysis.
+    #[serde(default)]
+    pub skip_silence: bool,
+    /// Apply a constant gain derived from integrated loudness.
+    #[serde(default)]
+    pub normalize_loudness: bool,
+    /// Target integrated loudness in LUFS (EBU R128).
+    #[serde(default = "default_loudness_target")]
+    pub loudness_target_lufs: f64,
 }
 
 pub fn default_scan_extensions() -> Vec<String> {
@@ -144,6 +153,10 @@ fn default_lyrics_position() -> String {
 /// so users can see exactly which nodes they can style.
 fn default_theme_mode() -> String {
     "dark".to_string()
+}
+
+fn default_loudness_target() -> f64 {
+    -16.0
 }
 
 fn default_theme_primary() -> String {
@@ -308,6 +321,9 @@ impl Default for AppSettings {
             seek_step_secs: default_seek_step_secs(),
             volume_step: default_volume_step(),
             scan_extensions: default_scan_extensions(),
+            skip_silence: false,
+            normalize_loudness: false,
+            loudness_target_lufs: default_loudness_target(),
         }
     }
 }

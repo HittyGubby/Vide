@@ -6,7 +6,7 @@ import { DEFAULT_DESKTOP_LYRICS_CSS, DEFAULT_DETAIL_LYRICS_CSS } from "$lib/lyri
 import { applyAppearance, DEFAULT_PRIMARY } from "$lib/theme";
 import { isTauri } from "$lib/isTauri";
 import { auth } from "$lib/stores/auth.svelte";
-import { readGuestTheme, withGuestTheme, writeGuestTheme } from "$lib/themeGuest";
+import { readGuestSettings, withGuestSettings, writeGuestSettings } from "$lib/themeGuest";
 
 class SettingsStore {
   settings = $state<AppSettings>({
@@ -27,6 +27,9 @@ class SettingsStore {
     seek_step_secs: 5,
     volume_step: 5,
     scan_extensions: ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "ape", "aiff", "wv"],
+    skip_silence: false,
+    normalize_loudness: false,
+    loudness_target_lufs: -16,
   });
   loaded = $state(false);
   /** Accelerators the OS refused to register (usually already taken). */
@@ -44,8 +47,8 @@ class SettingsStore {
     } catch {
       /* keep defaults */
     } finally {
-      if (this.guestTheme() && readGuestTheme()) {
-        this.settings = withGuestTheme(this.settings);
+      if (this.guestTheme() && readGuestSettings()) {
+        this.settings = withGuestSettings(this.settings);
       }
       this.loaded = true;
       applyAppearance(this.settings);
@@ -73,10 +76,20 @@ class SettingsStore {
     applyAppearance(this.settings);
 
     // Theme is pure presentation: keep it for guests without a server write.
-    if (this.guestTheme() && (key === "theme_mode" || key === "theme_primary")) {
-      writeGuestTheme({
+    const guestKeys = [
+      "theme_mode",
+      "theme_primary",
+      "skip_silence",
+      "normalize_loudness",
+      "loudness_target_lufs",
+    ] as const;
+    if (this.guestTheme() && (guestKeys as readonly string[]).includes(key)) {
+      writeGuestSettings({
         mode: this.settings.theme_mode,
         primary: this.settings.theme_primary,
+        skip_silence: this.settings.skip_silence,
+        normalize_loudness: this.settings.normalize_loudness,
+        loudness_target_lufs: this.settings.loudness_target_lufs,
       });
       return;
     }

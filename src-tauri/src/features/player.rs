@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -95,6 +96,20 @@ pub struct PlayerManager {
     db: Option<Arc<Database>>,
     /// Plugin access to resolve online streams.
     plugins: Option<Arc<crate::features::plugin::PluginManager>>,
+    /// Data directory (analysis cache + online media cache).
+    data_dir: PathBuf,
+    /// Absolute source position where the audible region begins.
+    trim_start: f64,
+    /// Absolute source position where the audible region ends.
+    trim_end: Option<f64>,
+}
+
+/// What to apply to mpv for the current track.
+#[derive(Default, Clone, Copy)]
+struct PlaybackEffects {
+    start: f64,
+    end: Option<f64>,
+    gain_db: f64,
 }
 
 impl PlayerManager {
@@ -103,6 +118,7 @@ impl PlayerManager {
     pub fn new(
         db: Option<Arc<Database>>,
         plugins: Option<Arc<crate::features::plugin::PluginManager>>,
+        data_dir: PathBuf,
     ) -> Self {
         PlayerManager {
             child: None,
@@ -120,6 +136,9 @@ impl PlayerManager {
             shuffle_played: std::collections::HashSet::new(),
             db,
             plugins,
+            data_dir,
+            trim_start: 0.0,
+            trim_end: None,
         }
     }
 
@@ -129,7 +148,13 @@ impl PlayerManager {
 
         let result = match descriptor {
             StreamDescriptor::UrlStream { id, url, headers } => {
-                self.play_url(id, url, headers.as_ref()).await
+                // Local files play directly; remote URLs are cached first so
+                // every online track has a stable local file to analyze.
+                if std::path::Path::new(url).is_file() {
+                    self.play_local_url(id, std::path::Path::new(url)).await
+                } else {
+                    self.cache_and_play(id, descriptor, headers.as_ref()).await
+                }
             }
             StreamDescriptor::Pipe { id, cmd } => {
                 self.play_plugin_pipe(id, cmd).await
@@ -142,6 +167,83 @@ impl PlayerManager {
                 self.state = PlaybackState::Stopped;
                 Err(e)
             }
+        }
+    }
+
+    /// Download a remote URL to the media cache, then play the local file.
+    async fn cache_and_play(
+        &mut self,
+        id: &str,
+        descriptor: &StreamDescriptor,
+        headers: Option<&std::collections::HashMap<String, String>>,
+    ) -> Result<PlaybackStatus, String> {
+        let Some(db) = self.db.clone() else {
+            let StreamDescriptor::UrlStream { url, .. } = descriptor else {
+                return Err("cannot cache this descriptor".to_string());
+            };
+            return self.play_url(id, url, headers, PlaybackEffects::default()).await;
+        };
+        let cache = CacheManager::new(db.as_ref().clone(), &self.data_dir)
+            .await
+            .map_err(|e| format!("cache init: {e}"))?;
+        let song_id = SongId(id.to_string());
+        let path = match cache
+            .get_cached(&song_id)
+            .await
+            .map_err(|e| format!("cache lookup: {e}"))?
+        {
+            Some(path) => path,
+            None => cache
+                .download_from_descriptor(&song_id, descriptor)
+                .await
+                .map_err(|e| format!("cache download: {e}"))?,
+        };
+        self.play_local_url(id, &path).await
+    }
+
+    /// Play a local file and apply the optional analysis (silence/gain).
+    async fn play_local_url(
+        &mut self,
+        id: &str,
+        path: &std::path::Path,
+    ) -> Result<PlaybackStatus, String> {
+        let effects = self.effects_for(id, path).await;
+        self.play_url(id, &path.to_string_lossy(), None, effects).await
+    }
+
+    /// Read the playback settings and turn the analysis into mpv effects.
+    async fn effects_for(&self, id: &str, path: &std::path::Path) -> PlaybackEffects {
+        let Some(db) = &self.db else {
+            return PlaybackEffects::default();
+        };
+        let Ok(settings) = db.load_app_settings().await else {
+            return PlaybackEffects::default();
+        };
+        if !settings.skip_silence && !settings.normalize_loudness {
+            return PlaybackEffects::default();
+        }
+        let Some(analysis) =
+            crate::features::analysis::get_or_analyze(&self.data_dir, id, path).await
+        else {
+            return PlaybackEffects::default();
+        };
+        let end = if settings.skip_silence && analysis.end_secs > analysis.start_secs + 0.5 {
+            Some(analysis.end_secs)
+        } else {
+            None
+        };
+        PlaybackEffects {
+            start: if settings.skip_silence {
+                analysis.start_secs.max(0.0)
+            } else {
+                0.0
+            },
+            end,
+            gain_db: if settings.normalize_loudness {
+                crate::features::analysis::gain_db(analysis.lufs, settings.loudness_target_lufs)
+            } else {
+                0.0
+            },
         }
     }
 
@@ -161,6 +263,7 @@ impl PlayerManager {
         id: &str,
         url: &str,
         headers: Option<&std::collections::HashMap<String, String>>,
+        effects: PlaybackEffects,
     ) -> Result<PlaybackStatus, String> {
         let sock = Self::ipc_path();
         let _ = std::fs::remove_file(&sock);
@@ -185,6 +288,18 @@ impl PlayerManager {
                 cmd.arg("--http-header-fields");
                 cmd.arg(format!("{key}: {value}"));
             }
+        }
+
+        if effects.start > 0.01 {
+            cmd.arg(format!("--start={:.3}", effects.start));
+        }
+        if let Some(end) = effects.end {
+            if end > effects.start + 0.5 {
+                cmd.arg(format!("--end={:.3}", end));
+            }
+        }
+        if effects.gain_db.abs() > 0.05 {
+            cmd.arg(format!("--af=volume={:.2}dB", effects.gain_db));
         }
 
         cmd.arg(url);
@@ -212,6 +327,8 @@ impl PlayerManager {
         self.started_at = Some(Instant::now());
         self.duration = None;
         self.elapsed = 0.0;
+        self.trim_start = effects.start;
+        self.trim_end = effects.end.filter(|end| *end > effects.start + 0.5);
 
         debug!("playing url: {} ({})", id, url);
         Ok(self.status())
@@ -232,10 +349,7 @@ impl PlayerManager {
             .db
             .as_ref()
             .ok_or_else(|| "database unavailable".to_string())?;
-        let base = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("vide");
-        let cache = CacheManager::new(db.as_ref().clone(), &base)
+        let cache = CacheManager::new(db.as_ref().clone(), &self.data_dir)
             .await
             .map_err(|e| format!("cache init: {e}"))?;
         let song_id = SongId(id.to_string());
@@ -246,7 +360,36 @@ impl PlayerManager {
             .await
             .map_err(|e| format!("cache lookup: {e}"))?
         {
-            return self.play_url(id, &path.to_string_lossy(), None).await;
+            return self.play_local_url(id, &path).await;
+        }
+
+        // When silence/loudness effects are enabled, wait for the complete
+        // cache so the first play can be analyzed too; otherwise start
+        // streaming immediately.
+        let effects_enabled = match &self.db {
+            Some(db) => db
+                .load_app_settings()
+                .await
+                .map(|settings| settings.skip_silence || settings.normalize_loudness)
+                .unwrap_or(false),
+            None => false,
+        };
+        if effects_enabled {
+            let permit = stream_semaphore()
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| "stream limiter closed".to_string())?;
+            let _permit = permit;
+            let descriptor = StreamDescriptor::Pipe {
+                id: id.to_string(),
+                cmd: cmd_parts.to_vec(),
+            };
+            let path = cache
+                .download_from_descriptor(&song_id, &descriptor)
+                .await
+                .map_err(|e| format!("cache download: {e}"))?;
+            return self.play_local_url(id, &path).await;
         }
 
         // Limit simultaneous background downloads. If the cap is reached, the
@@ -267,7 +410,8 @@ impl PlayerManager {
             .map_err(|_| "stream ended before writing data".to_string())?;
 
         debug!("playing cached stream: {} ({:?})", id, started.path);
-        self.play_url(id, &started.path.to_string_lossy(), None).await
+        self.play_url(id, &started.path.to_string_lossy(), None, PlaybackEffects::default())
+            .await
     }
 
     /// Send a JSON-RPC command to mpv's IPC socket and return the raw response.
@@ -391,12 +535,15 @@ impl PlayerManager {
         if position_secs < 0.0 {
             return Err("negative position".to_string());
         }
-        self.ipc_command_ok(serde_json::json!(["seek", position_secs, "absolute"]))
+        // Callers use the displayed (trimmed) timeline; mpv needs the
+        // absolute position in the source file.
+        let raw = position_secs + self.trim_start;
+        self.ipc_command_ok(serde_json::json!(["seek", raw, "absolute"]))
             .await
             .map(|_| ())?;
         // Keep the frontend position in sync immediately so the progress
         // bar does not snap back to the pre-seek time.
-        self.elapsed = position_secs;
+        self.elapsed = raw;
         Ok(())
     }
 
@@ -834,6 +981,8 @@ impl PlayerManager {
         self.started_at = None;
         self.duration = None;
         self.elapsed = 0.0;
+        self.trim_start = 0.0;
+        self.trim_end = None;
         self.status()
     }
 
@@ -843,11 +992,18 @@ impl PlayerManager {
     }
 
     pub fn status(&self) -> PlaybackStatus {
+        // The frontend works on the audible region only; mpv reports absolute
+        // source positions (which include the skipped head).
+        let elapsed = (self.elapsed - self.trim_start).max(0.0);
+        let duration = self
+            .trim_end
+            .map(|end| (end - self.trim_start).max(0.0))
+            .or(self.duration);
         PlaybackStatus {
             state: self.state,
             media_id: self.media_id.clone(),
-            elapsed_secs: Some(self.elapsed),
-            duration_secs: self.duration,
+            elapsed_secs: Some(elapsed),
+            duration_secs: duration,
         }
     }
 
@@ -925,7 +1081,7 @@ impl PlayerManager {
 
 impl Default for PlayerManager {
     fn default() -> Self {
-        Self::new(None, None)
+        Self::new(None, None, std::env::temp_dir())
     }
 }
 
@@ -975,7 +1131,8 @@ mod tests {
     async fn play_queue_roundtrips_through_settings() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
 
-        let mut player = PlayerManager::new(Some(db.clone()), None);
+        let mut player =
+            PlayerManager::new(Some(db.clone()), None, std::env::temp_dir());
         player
             .set_queue(vec!["a".into(), "b".into(), "c".into()], -1)
             .await
@@ -984,7 +1141,7 @@ mod tests {
         player.current_index = 1;
         player.persist_queue().await;
 
-        let mut restored = PlayerManager::new(Some(db), None);
+        let mut restored = PlayerManager::new(Some(db), None, std::env::temp_dir());
         restored.restore_queue().await;
         assert_eq!(restored.queue, vec!["a", "b", "c"]);
         assert_eq!(restored.current_index, 1);

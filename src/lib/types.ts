@@ -217,6 +217,13 @@ export interface CacheStat {
 /* ── App Settings ──────────────────────── */
 export type ThemeMode = "dark" | "light";
 
+/** Server-side audio analysis result (seconds are absolute in the file). */
+export interface SongAnalysis {
+  start_secs: number;
+  end_secs: number;
+  lufs?: number | null;
+}
+
 export interface AppSettings {
   close_to_tray: boolean;
   auto_play_on_start: boolean;
@@ -235,4 +242,7 @@ export interface AppSettings {
   seek_step_secs: number;
   volume_step: number;
   scan_extensions: string[];
+  skip_silence: boolean;
+  normalize_loudness: boolean;
+  loudness_target_lufs: number;
 }

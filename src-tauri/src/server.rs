@@ -563,6 +563,30 @@ async fn download_song(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+async fn song_analysis(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Response, StatusCode> {
+    if !state.public_media && require_session(&state, &headers, None).is_err() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let song = state
+        .app
+        .db
+        .get_song(&SongId(id.clone()))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let path = ensure_media_path(&state, &song)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(match crate::features::analysis::get_or_analyze(&state.data_dir, &id, &path).await {
+        Some(analysis) => Json(serde_json::to_value(analysis).unwrap_or_default()).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
+}
+
 async fn media(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -2082,6 +2106,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/resolve", post(resolve_song))
         .route("/api/v1/player/play-online", post(play_online_results))
         .route("/api/v1/media/:id", get(media))
+        .route("/api/v1/analysis/:id", get(song_analysis))
         .route("/api/v1/download/:id", get(download_song))
         .route("/api/v1/image", get(image_proxy))
         .route("/api/v1/player/status", get(player_status))
