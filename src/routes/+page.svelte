@@ -249,16 +249,21 @@
     }
   }
 
-  // Locate the given song id in the list: highlight + scroll it into view.
+  // Locate the given song id in the CURRENT list (current query/filter):
+  // highlight + scroll it into view. Returns false when the song is filtered
+  // out, so the caller can show a toast instead of forcing a different view.
   const ROW_H = 34; // song-row height in px
   let locatorTarget = $state<string | null>(null);
-  async function scrollToSong(id: string) {
+  async function scrollToSong(id: string): Promise<boolean> {
     locatorTarget = id;
-    // Find the index in the current sorted list and center the row.
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 100; attempt++) {
       await tick();
-      const idx = sortedSongs.findIndex((s) => s.id === id);
-      if (idx >= 0) {
+      if (!libraryStore.loading) {
+        const idx = sortedSongs.findIndex((s) => s.id === id);
+        if (idx < 0) {
+          locatorTarget = null;
+          return false;
+        }
         if (platform.mobileUI) {
           mobileList?.scrollToSong(id);
         } else if (listEl) {
@@ -270,11 +275,13 @@
           viewHeight = listEl.clientHeight || 0;
           saveScroll();
         }
-        break;
+        setTimeout(() => (locatorTarget = null), 2500);
+        return true;
       }
       await new Promise((r) => setTimeout(r, 50));
     }
-    setTimeout(() => (locatorTarget = null), 2500);
+    locatorTarget = null;
+    return false;
   }
 
   // The background startup scan (and the settings-page "scan now" action)
@@ -292,13 +299,12 @@
     await loadColumns();
     await libraryStore.init();
 
-    // A locate request must be able to see the whole library: clear the
-    // restored query first, otherwise the song may be filtered out.
+    // Locate inside the list the user is currently looking at; if the song is
+    // filtered out, do nothing but explain why.
     const locateId = $page.url.searchParams.get("locate");
     if (locateId) {
-      await libraryQuery.execute("");
-      await libraryStore.reload();
-      await scrollToSong(locateId);
+      const found = await scrollToSong(locateId);
+      if (!found) showSongNote("当前列表没有这首歌");
     } else {
       await tick();
       await restoreScroll();
@@ -321,11 +327,12 @@
       _lastLocateReq = req;
       const locateId = player.locateSongId;
       if (locateId) {
-        // Force "全部歌曲" so the song is present in this view.
-        void libraryQuery.execute("").then(async () => {
-          await libraryStore.reload();
-          await scrollToSong(locateId);
-        });
+        // Stay on the current query; only scroll if the song is actually in
+        // this result set.
+        void (async () => {
+          const found = await scrollToSong(locateId);
+          if (!found) showSongNote("当前列表没有这首歌");
+        })();
       }
     } else if (req === 0) {
       _lastLocateReq = -1;
