@@ -54,6 +54,7 @@
     { id: "tag", label: "标签", defWidth: 160, min: 80 },
     { id: "artist", label: "歌手", defWidth: 130, min: 80 },
     { id: "album", label: "专辑", defWidth: 140, min: 80 },
+    { id: "added", label: "添加时间", defWidth: 160, min: 100 },
     { id: "time", label: "时长", fixed: true, defWidth: 52, min: 52 },
   ];
 
@@ -64,6 +65,9 @@
   const layout = new ColumnLayout(COLUMN_DEFS, "list.columns");
 
   let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  // Online songs whose metadata has already been requested this session; do
+  // not retry failures on every render/navigation.
+  const backfillAttempted = new Set<string>();
 
   async function loadColumns() {
     await layout.load(COL_KEY);
@@ -298,6 +302,7 @@
   onMount(async () => {
     await loadColumns();
     await libraryStore.init();
+    void backfillMissingOnlineMetadata();
 
     // Locate inside the list the user is currently looking at; if the song is
     // filtered out, do nothing but explain why.
@@ -338,6 +343,41 @@
       _lastLocateReq = -1;
     }
   });
+
+  /**
+   * Online songs can enter the library through playlist imports whose
+   * provider payload has no duration/cover. Resolve a bounded batch in the
+   * background and patch the rows in place so the list does not stay blank
+   * until each song is played.
+   */
+  async function backfillMissingOnlineMetadata(): Promise<void> {
+    if (!canManage()) return;
+    const ids = libraryStore.songs
+      .filter((song) => {
+        if (song.sources.length === 0) return false;
+        const duration = song.metadata.duration;
+        const cover = song.metadata.cover_url;
+        const missing =
+          !duration || duration <= 0 || !cover || !song.metadata.added_time;
+        return missing && !backfillAttempted.has(song.id);
+      })
+      .map((song) => song.id)
+      .slice(0, 40);
+    if (ids.length === 0) return;
+    for (const id of ids) backfillAttempted.add(id);
+    try {
+      const updated = await invoke<Song[]>("backfill_online_metadata", { ids });
+      if (updated.length > 0) {
+        libraryStore.applyMany(updated);
+        // Refresh the player bar's artwork if the currently playing song was
+        // one of the rows that just got its cover.
+        const current = updated.find((song) => song.id === player.mediaId);
+        if (current?.metadata.cover_url) player.cover = current.metadata.cover_url;
+      }
+    } catch (e) {
+      console.error("backfill metadata error:", e);
+    }
+  }
 
   async function reloadSongs(): Promise<void> {
     await libraryStore.reload();
@@ -894,6 +934,11 @@
                   <span class="cell-text">{displayText(song, "artist")}</span>
                 {:else if column.id === "album"}
                   <span class="cell-text">{displayText(song, "album")}</span>
+                {:else if column.id === "added"}
+                  <span
+                    class="cell-added"
+                    title={song.metadata.added_time ?? ""}
+                  >{song.metadata.added_time ?? "—"}</span>
                 {:else if column.id === "time"}
                   <span class="cell-time">{formatDuration(song.metadata.duration)}</span>
                 {/if}
@@ -1192,6 +1237,14 @@
 
   .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cell-time { color: color-mix(in oklch, var(--color-base-content) 60%, transparent); font-size: 12px; }
+  .cell-added {
+    color: color-mix(in oklch, var(--color-base-content) 62%, transparent);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .empty-state {
     flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;

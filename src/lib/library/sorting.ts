@@ -1,7 +1,14 @@
 import type { Song } from "$lib/types";
 import { displayAlbum, displayArtist, displayTitle, tagText } from "$lib/songDisplay";
 
-export type LibraryColumn = "num" | "name" | "tag" | "artist" | "album" | "time";
+export type LibraryColumn =
+  | "num"
+  | "name"
+  | "tag"
+  | "artist"
+  | "album"
+  | "added"
+  | "time";
 
 export interface QuerySort {
   field: string;
@@ -15,6 +22,7 @@ export const SORT_FIELD_BY_COLUMN: Record<LibraryColumn, string | null> = {
   tag: "tags",
   artist: "artist",
   album: "album",
+  added: "added_time",
   time: "duration",
 };
 
@@ -25,6 +33,7 @@ export const COLUMN_BY_SORT_FIELD: Record<string, LibraryColumn> = {
   tags: "tag",
   artist: "artist",
   album: "album",
+  added_time: "added",
   duration: "time",
 };
 
@@ -77,6 +86,10 @@ export function compareByColumn(a: Song, b: Song, field: LibraryColumn): number 
       return displayAlbum(a).localeCompare(displayAlbum(b));
     case "tag":
       return tagText(a).localeCompare(tagText(b));
+    case "added":
+      return (a.metadata.added_time ?? "").localeCompare(
+        b.metadata.added_time ?? "",
+      );
     case "time":
       return (a.metadata.duration ?? 0) - (b.metadata.duration ?? 0);
     default:

@@ -220,6 +220,7 @@ pub fn run() {
             // Online Search
             features::ui::search_online,
             features::ui::resolve_song,
+            features::ui::backfill_online_metadata,
             features::ui::import_playlist_url,
             // Search
             features::ui::fuzzy_search_songs,

@@ -1434,6 +1434,85 @@ async fn resolve_song(
 }
 
 #[derive(Deserialize)]
+struct BackfillMetadataRequest {
+    ids: Vec<String>,
+}
+
+/// Fill in missing duration/cover/added_time for online songs. Bound the batch
+/// because each item needs a plugin resolve.
+async fn backfill_metadata(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<BackfillMetadataRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    require_csrf(&state, &headers)?;
+    let plugins = state
+        .app
+        .plugins
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut updated = Vec::new();
+    for id in request.ids.into_iter().take(40) {
+        let Some(mut song) = state
+            .app
+            .db
+            .get_song(&SongId(id))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        else {
+            continue;
+        };
+        if song.sources.is_empty() {
+            continue;
+        }
+        let needs_duration = song.metadata.duration.map_or(true, |d| d <= 0.0);
+        let needs_cover = song
+            .metadata
+            .cover_url
+            .as_deref()
+            .map_or(true, |s| s.is_empty());
+        if !needs_duration && !needs_cover && song.metadata.added_time.is_some() {
+            continue;
+        }
+        let source = song.sources[0].clone();
+        let Ok(item) = plugins.resolve(&source.platform, &source.id).await else {
+            continue;
+        };
+        let mut changed = false;
+        if needs_duration {
+            if let Some(duration) = item.duration.filter(|d| *d > 0.0) {
+                song.metadata.duration = Some(duration);
+                changed = true;
+            }
+        }
+        if needs_cover {
+            if let Some(cover) = item.cover_url.filter(|s| !s.is_empty()) {
+                song.metadata.cover_url = Some(cover);
+                changed = true;
+            }
+        }
+        if song.metadata.added_time.is_none() {
+            song.metadata.added_time = Some(crate::infra::time::now_timestamp());
+            changed = true;
+        }
+        if changed {
+            state
+                .app
+                .db
+                .upsert_song(&song)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let mut value = public_song(song);
+            if let Some(metadata) = value.get_mut("metadata").and_then(Value::as_object_mut) {
+                metadata.insert("lyrics".to_string(), Value::Null);
+            }
+            updated.push(value);
+        }
+    }
+    Ok(Json(serde_json::to_value(updated).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
 struct PlayOnlineRequest {
     results: Vec<crate::features::plugin::types::Track>,
     index: isize,
@@ -2104,6 +2183,7 @@ fn build_router(state: ServerState) -> Router {
         .route("/api/v1/plugins/route", post(set_plugin_route))
         .route("/api/v1/search/online", post(search_online))
         .route("/api/v1/resolve", post(resolve_song))
+        .route("/api/v1/metadata/backfill", post(backfill_metadata))
         .route("/api/v1/player/play-online", post(play_online_results))
         .route("/api/v1/media/:id", get(media))
         .route("/api/v1/analysis/:id", get(song_analysis))

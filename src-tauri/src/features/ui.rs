@@ -955,6 +955,76 @@ pub async fn resolve_song(
     Ok(song)
 }
 
+/// Fill in missing duration/cover/added_time for online songs the caller has
+/// in view. Resolving is network-bound, so the batch is bounded and the UI
+/// applies the returned songs in place instead of reloading the library.
+#[tauri::command]
+pub async fn backfill_online_metadata(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<Vec<Song>, String> {
+    let plugins = state
+        .plugins
+        .as_ref()
+        .ok_or_else(|| "plugin system not available".to_string())?;
+    let mut updated = Vec::new();
+    for id in ids.into_iter().take(40) {
+        let Some(mut song) = state
+            .db
+            .get_song(&SongId(id))
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        if song.sources.is_empty() {
+            continue;
+        }
+        let needs_duration = song.metadata.duration.map_or(true, |d| d <= 0.0);
+        let needs_cover = song
+            .metadata
+            .cover_url
+            .as_deref()
+            .map_or(true, |s| s.is_empty());
+        if !needs_duration && !needs_cover && song.metadata.added_time.is_some() {
+            continue;
+        }
+        let source = song.sources[0].clone();
+        let Ok(item) = plugins.resolve(&source.platform, &source.id).await else {
+            continue;
+        };
+        let mut changed = false;
+        if needs_duration {
+            if let Some(duration) = item.duration.filter(|d| *d > 0.0) {
+                song.metadata.duration = Some(duration);
+                changed = true;
+            }
+        }
+        if needs_cover {
+            if let Some(cover) = item.cover_url.filter(|s| !s.is_empty()) {
+                song.metadata.cover_url = Some(cover);
+                changed = true;
+            }
+        }
+        if song.metadata.added_time.is_none() {
+            song.metadata.added_time = Some(crate::infra::time::now_timestamp());
+            changed = true;
+        }
+        if changed {
+            state
+                .db
+                .upsert_song(&song)
+                .await
+                .map_err(|e| e.to_string())?;
+            // The library row only needs metadata; do not ship lyrics back.
+            let mut returned = song.clone();
+            returned.metadata.lyrics = None;
+            updated.push(returned);
+        }
+    }
+    Ok(updated)
+}
+
 /// Import an online playlist URL (YouTube/Bilibili/etc.) into the library.
 ///
 /// Uses the plugin system to resolve the playlist entries, upserts each entry

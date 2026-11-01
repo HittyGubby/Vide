@@ -80,6 +80,14 @@ function toTrack(platform, song) {
   };
 }
 
+function platformTrack(platform, song) {
+  if (!song) return null;
+  if (platform === 'netease') return neteaseTrack(song);
+  if (platform === 'tencent') return tencentTrack(song);
+  if (platform === 'kugou') return kugouTrack(song);
+  return toTrack(platform, song);
+}
+
 function rawMeting(platform) {
   const instance = new Meting(platform);
   instance.format(false);
@@ -279,7 +287,10 @@ function parseUrl(raw) {
       const parts = path.split('/').filter(Boolean);
       if (parts[0] === 'song' || parts[0] === 'playlist') id = parts[1];
     }
-    if (id) return { platform: 'netease', type: path.includes('playlist') ? 'playlist' : 'song', id };
+    if (id) {
+      const isPlaylist = path.includes('playlist') || url.hash.includes('playlist');
+      return { platform: 'netease', type: isPlaylist ? 'playlist' : 'song', id };
+    }
   }
 
   if (host.endsWith('y.qq.com') || host.endsWith('qq.com')) {
@@ -388,10 +399,25 @@ async function resolve(params) {
   if (!['netease', 'tencent', 'kugou'].includes(platform)) {
     throw new Error('unsupported platform: ' + platform);
   }
-  const instance = meting(platform);
-  const track = toTrack(platform, first(await instance.song(sourceId)));
-  if (!track) throw new Error('song not found');
-  return track;
+  // Use the raw provider payload: Meting's normalised format drops duration
+  // and cover, which left newly resolved library songs without either.
+  const raw = parseJson(await rawMeting(platform).song(sourceId));
+  let song = null;
+  if (platform === 'netease') {
+    song = first(raw?.songs ?? raw);
+  } else if (platform === 'tencent') {
+    const data = raw?.data ?? raw;
+    song = Array.isArray(data) ? data[0] : first(data);
+  } else if (platform === 'kugou') {
+    song = first(raw?.data ?? raw);
+  }
+  const track = platformTrack(platform, song);
+  if (track) return track;
+
+  // Last resort: keep the old normalised mapping (title/artist at least).
+  const fallback = toTrack(platform, first(await meting(platform).song(sourceId)));
+  if (!fallback) throw new Error('song not found');
+  return fallback;
 }
 
 async function stream(params) {
@@ -451,9 +477,24 @@ async function playlist(params) {
   if (!['netease', 'tencent', 'kugou'].includes(parsed.platform)) {
     throw new Error('unsupported platform: ' + parsed.platform);
   }
-  const instance = meting(parsed.platform);
-  const raw = await instance.playlist(parsed.id);
-  return asArray(raw).map((item) => toTrack(parsed.platform, item)).filter(Boolean);
+  const platform = parsed.platform;
+  const raw = parseJson(await rawMeting(platform).playlist(parsed.id));
+  let songs = [];
+  if (platform === 'netease') {
+    songs = raw?.playlist?.tracks ?? raw?.tracks ?? [];
+  } else if (platform === 'tencent') {
+    songs = raw?.data?.cdlist?.[0]?.songlist ?? raw?.cdlist?.[0]?.songlist ?? [];
+  } else if (platform === 'kugou') {
+    songs = raw?.data?.info ?? raw?.info ?? [];
+  }
+  const mapped = asArray(songs)
+    .map((item) => platformTrack(platform, item))
+    .filter(Boolean);
+  if (mapped.length > 0) return mapped;
+
+  // Last resort: the normalised playlist (no duration/cover, but playable).
+  const normalized = await meting(platform).playlist(parsed.id);
+  return asArray(normalized).map((item) => toTrack(platform, item)).filter(Boolean);
 }
 
 async function handle(action, params) {

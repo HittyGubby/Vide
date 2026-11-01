@@ -37,7 +37,17 @@ export function normalizeColumnPrefs(
   const order = Array.isArray(raw.order)
     ? raw.order.filter((id): id is string => defs.some((def) => def.id === id))
     : [];
-  for (const def of defs) if (!order.includes(def.id)) order.push(def.id);
+  // Insert columns added after a layout was saved at their default position
+  // (e.g. "added" between album and duration), not at the far right.
+  for (let i = 0; i < defs.length; i += 1) {
+    const def = defs[i];
+    if (order.includes(def.id)) continue;
+    const next = defs
+      .slice(i + 1)
+      .find((candidate) => order.includes(candidate.id));
+    if (next) order.splice(order.indexOf(next.id), 0, def.id);
+    else order.push(def.id);
+  }
   const visibility = { ...fallback.visibility };
   for (const def of defs) {
     if (typeof rawVisibility[def.id] === "boolean") {

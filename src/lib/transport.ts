@@ -529,6 +529,8 @@ async function remoteInvoke<T>(command: string, args: Record<string, unknown> = 
         "GET",
         "/api/v1/analysis/" + encodeURIComponent(arg<string>(args, "songId", "id")),
       );
+    case "backfill_online_metadata":
+      return remoteRequest<T>("POST", "/api/v1/metadata/backfill", args);
     case "get_song_tags":
       return remoteRequest<T>(
         "GET",

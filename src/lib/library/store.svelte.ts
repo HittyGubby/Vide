@@ -21,8 +21,8 @@ class LibraryStore {
   songs = $state<Song[]>([]);
   loading = $state(true);
   error = $state<string | null>(null);
-  sortField = $state<LibraryColumn>("name");
-  sortAsc = $state(true);
+  sortField = $state<LibraryColumn>("added");
+  sortAsc = $state(false);
 
   private loadedQuery: string | null = null;
   private hasLoaded = false;
@@ -97,7 +97,20 @@ class LibraryStore {
   async loadSortPrefs(): Promise<void> {
     const saved = await loadClientState<{ field?: string; asc?: boolean }>("list.sort");
     if (!saved) return;
-    const fields: LibraryColumn[] = ["num", "name", "tag", "artist", "album", "time"];
+    // The previous default was name ASC; treat it as unset so existing users
+    // get the new default (added_time DESC) on their first launch after the
+    // update. Any other saved sort remains an explicit choice.
+    const oldDefault = saved.field === "name" && saved.asc === true;
+    if (oldDefault) return;
+    const fields: LibraryColumn[] = [
+      "num",
+      "name",
+      "tag",
+      "artist",
+      "album",
+      "added",
+      "time",
+    ];
     if (fields.includes(saved.field as LibraryColumn)) {
       this.sortField = saved.field as LibraryColumn;
     }
