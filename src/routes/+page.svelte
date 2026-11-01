@@ -410,6 +410,7 @@
     { id: "tag", label: "标签" },
     { id: "artist", label: "歌手" },
     { id: "album", label: "专辑" },
+    { id: "added", label: "加入时间" },
     { id: "time", label: "时长" },
   ];
 
