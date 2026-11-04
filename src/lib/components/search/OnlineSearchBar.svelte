@@ -1,10 +1,30 @@
 <script lang="ts">
   import { History, Loader, Search, X } from "lucide-svelte";
+  import ConfirmDialog from "$lib/ui/ConfirmDialog.svelte";
   import { searchPage } from "$lib/stores/searchPage.svelte";
   import { searchStore } from "$lib/stores/search.svelte";
 
   let open = $state(false);
   let wrapEl = $state<HTMLDivElement | null>(null);
+  let clearConfirmOpen = $state(false);
+  let clearNote = $state<string | null>(null);
+  let clearTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function scheduleNoteReset() {
+    if (clearTimer) clearTimeout(clearTimer);
+    clearTimer = setTimeout(() => (clearNote = null), 2500);
+  }
+
+  async function clearHistory() {
+    if (clearTimer) clearTimeout(clearTimer);
+    try {
+      await searchStore.clear();
+      clearNote = "搜索历史已清空";
+    } catch {
+      clearNote = "清空搜索历史失败";
+    }
+    scheduleNoteReset();
+  }
 
   function submit() {
     if (!searchPage.query.trim()) return;
@@ -71,9 +91,14 @@
       <div class="panel-head">
         <span class="panel-title"><History size={12} /> 搜索历史</span>
         {#if searchStore.history.length > 0}
-          <button class="panel-clear" onclick={() => void searchStore.clear()}>清除</button>
+          <button class="panel-clear" onclick={() => (clearConfirmOpen = true)}>
+            清除
+          </button>
         {/if}
       </div>
+      {#if clearNote}
+        <div class="panel-note">{clearNote}</div>
+      {/if}
       {#if searchStore.history.length === 0}
         <div class="panel-empty">暂无搜索历史</div>
       {:else}
@@ -91,6 +116,14 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  bind:open={clearConfirmOpen}
+  title="清空搜索历史？"
+  message="将删除全部搜索历史记录。"
+  confirmLabel="清空"
+  onconfirm={() => void clearHistory()}
+/>
 
 <style>
   .online-search {
@@ -149,6 +182,11 @@
     color: color-mix(in oklch, var(--color-base-content) 55%, transparent);
   }
   .panel-clear:hover { color: var(--color-primary); }
+  .panel-note {
+    padding: 5px 6px;
+    font-size: 10px;
+    color: var(--color-primary);
+  }
   .panel-empty {
     padding: 10px 6px;
     font-size: 11px;

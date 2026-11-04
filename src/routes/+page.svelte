@@ -434,7 +434,13 @@
     try {
       // Register the current visible list as the queue and start playing the
       // chosen song — the Rust backend owns sequencing & auto-advance.
+      // Optimistic UI: the row tap must visibly start immediately even when
+      // the browser has to fetch a stream/analysis first.
       player.mediaId = song.id;
+      player.title = displayTitle(song);
+      player.artist = displayArtist(song);
+      player.album = displayAlbum(song);
+      player.cover = song.metadata?.cover_url ?? null;
       await player.playFromList(
         sortedSongs.map((s) => ({
           id: s.id,
@@ -444,10 +450,6 @@
         })),
         song.id,
       );
-      player.title = displayTitle(song);
-      player.artist = displayArtist(song);
-      player.album = displayAlbum(song);
-      player.cover = song.metadata?.cover_url ?? null;
     } catch (e) {
       console.error("play error:", e);
     }

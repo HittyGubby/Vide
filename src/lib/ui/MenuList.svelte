@@ -45,6 +45,9 @@
   .menu-list {
     display: flex;
     flex-direction: column;
+    /* The popover itself is shrink-to-fit; stretch every row to its full
+       content width so hover/focus backgrounds never stop short. */
+    width: 100%;
   }
 
   .menu-item {

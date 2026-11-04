@@ -10,6 +10,7 @@
   import { ColumnLayout } from "$lib/table/columnLayout.svelte";
   import type { TableColumnDef } from "$lib/table/columns";
   import ContextMenu from "$lib/components/song/ContextMenu.svelte";
+  import ConfirmDialog from "$lib/ui/ConfirmDialog.svelte";
   import type { MenuItem } from "$lib/ui/menu";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import MultiTagEditor from "$lib/components/song/MultiTagEditor.svelte";
@@ -33,6 +34,7 @@
   let editingSong = $state<Song | null>(null);
   let playingKey = $state<string | null>(null);
   let actionError = $state<string | null>(null);
+  let clearHistoryOpen = $state(false);
   let menu = $state<{ x: number; y: number; item: SearchResultItem } | null>(null);
   let sheetOpen = $state(false);
   let sheetItem = $state<SearchResultItem | null>(null);
@@ -652,7 +654,7 @@
         <History size={14} />
         <span>Search History</span>
         {#if searchStore.history.length > 0}
-          <button class="clear-all" onclick={() => searchStore.clear()}>清除</button>
+          <button class="clear-all" onclick={() => (clearHistoryOpen = true)}>清除</button>
         {/if}
       </div>
       <div class="chips">
@@ -741,13 +743,15 @@
               <div class="td" style={columnStyle(column.id)}>
                 {#if column.id === "index"}
                   {#if selection.size > 0}
-                    <input
-                      type="checkbox"
-                      class="row-check"
-                      checked={selection.has(item)}
-                      onclick={(e) => e.stopPropagation()}
-                      onchange={(e) => selection.setChecked(item, e.currentTarget.checked, i)}
-                    />
+                    <span class="row-check-wrap">
+                      <input
+                        type="checkbox"
+                        class="row-check"
+                        checked={selection.has(item)}
+                        onclick={(e) => e.stopPropagation()}
+                        onchange={(e) => selection.setChecked(item, e.currentTarget.checked, i)}
+                      />
+                    </span>
                   {:else if item.cover_url}
                     <img class="row-cover" src={coverSrc(item)} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror={(e) => void proxyCover(e, item)} />
                   {:else}
@@ -789,6 +793,13 @@
 {#if menu}
   <ContextMenu items={menuItems(menu.item)} x={menu.x} y={menu.y} onclose={() => (menu = null)} />
 {/if}
+<ConfirmDialog
+  bind:open={clearHistoryOpen}
+  title="清空搜索历史？"
+  message="将删除全部搜索历史记录。"
+  confirmLabel="清空"
+  onconfirm={() => void searchStore.clear()}
+/>
 {#if columnMenu}
   <ContextMenu items={columnMenuItems} x={columnMenu.x} y={columnMenu.y} onclose={() => (columnMenu = null)} />
 {/if}
@@ -1078,14 +1089,15 @@
   .resize-handle::after { content: ""; position: absolute; left: 50%; top: 6px; bottom: 6px; width: 1px; background: transparent; }
   .resize-handle:hover::after { background: color-mix(in oklch, var(--color-primary) 60%, transparent); }
   .col-filler { flex: 1 1 0; min-width: 0; }
-  .song-row { display: flex; align-items: center; height: 36px; min-width: 0; color: var(--color-base-content); font-size: 13px; cursor: pointer; transition: background .1s; border-radius: 0; }
+  .song-row { display: flex; align-items: center; height: 36px; min-height: 36px; min-width: 0; color: var(--color-base-content); font-size: 13px; cursor: pointer; transition: background .1s; border-radius: 0; }
   .song-row:hover { background: color-mix(in oklch, var(--color-base-300) 70%, transparent); }
   .song-row.playing { background: color-mix(in oklch, var(--color-primary) 12%, transparent); }
   .song-row.playing .name-text { color: var(--color-primary); }
-  .td { display: flex; align-items: center; padding: 0 8px; min-width: 0; user-select: text; overflow: hidden; }
+  .td { display: flex; align-items: center; padding: 0 8px; min-width: 0; min-height: 30px; user-select: text; overflow: hidden; }
   .cell-num { color: color-mix(in oklch, var(--color-base-content) 50%, transparent); font-size: 12px; }
-  .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
-  .row-cover { width: 30px; height: 30px; border-radius: 3px; object-fit: cover; }
+  .row-check-wrap { display: flex; align-items: center; justify-content: center; width: 100%; height: 30px; }
+  .row-check { width: 16px; height: 16px; accent-color: var(--color-primary); cursor: pointer; }
+  .row-cover { display: block; width: 30px; height: 30px; border-radius: 3px; object-fit: cover; }
   .name-cell { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
   .name-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag-badge { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in oklch, var(--color-primary) 15%, transparent); color: var(--color-primary); }
@@ -1135,7 +1147,7 @@
     flex: none;
   }
 
-  .row-check { width: 13px; height: 13px; accent-color: var(--color-primary); cursor: pointer; }
+  .row-check { width: 16px; height: 16px; accent-color: var(--color-primary); cursor: pointer; }
 
   .res-cover {
     display: block;

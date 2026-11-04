@@ -444,73 +444,86 @@ class PlayerStore {
         if (queueIndex >= 0) this.currentIndex = queueIndex;
         this.elapsed = 0;
         this.duration = 0;
+        this.trimStart = 0;
+        this.trimEnd = null;
 
-        // The analysis is cached server-side; a first online play may wait for
-        // the cache download + a short ffmpeg pass. Create the WebAudio graph
-        // before that await so the context starts inside the user gesture.
         const settings = settingsStore.settings;
         if (settings.normalize_loudness) {
           this.ensureAudioGraph(audio, media.url);
         }
-        let analysis: SongAnalysis | null = null;
-        if (settings.skip_silence || settings.normalize_loudness) {
-          try {
-            analysis = (await invoke<SongAnalysis | null>("get_song_analysis", {
-              songId: id,
-            })) ?? null;
-          } catch {
-            analysis = null;
-          }
-        }
-        this.trimStart =
-          settings.skip_silence && analysis ? Math.max(0, analysis.start_secs) : 0;
-        this.trimEnd =
-          settings.skip_silence &&
-          analysis &&
-          analysis.end_secs > analysis.start_secs + 0.5
-            ? analysis.end_secs
-            : null;
-        const gainDb =
-          settings.normalize_loudness && analysis?.lufs != null
-            ? Math.max(
-                -12,
-                Math.min(6, settings.loudness_target_lufs - analysis.lufs),
-              )
-            : 0;
 
         audio.src = media.url;
         audio.volume = this.volume / 100;
         audio.muted = this.muted;
         audio.playbackRate = this.speed;
-        this.applyClientGain(audio, gainDb, media.url);
 
-        // Wait for metadata so the head-skip seek lands on the first frame.
-        if (audio.readyState < 1) {
-          await new Promise<void>((resolve) => {
-            let settled = false;
-            const done = () => {
-              if (settled) return;
-              settled = true;
-              audio.removeEventListener("loadedmetadata", done);
-              resolve();
+        // Start inside the tap gesture. The track analysis may trigger a full
+        // cache download for online songs, so it must never block first play.
+        void audio.play().catch((e) => console.error("audio play error:", e));
+
+        // Resume position is applied once metadata is available (or after the
+        // analysis arrives, whichever comes last).
+        if (position > 0) {
+          const applyPosition = () => {
+            try {
+              audio.currentTime = this.trimStart + position;
+              this.elapsed = position;
+            } catch {
+              /* metadata may not be ready yet */
+            }
+          };
+          if (audio.readyState >= 1) applyPosition();
+          else audio.addEventListener("loadedmetadata", applyPosition, { once: true });
+        }
+
+        if (settings.skip_silence || settings.normalize_loudness) {
+          void (async () => {
+            let analysis: SongAnalysis | null = null;
+            try {
+              analysis = (await invoke<SongAnalysis | null>("get_song_analysis", {
+                songId: id,
+              })) ?? null;
+            } catch {
+              analysis = null;
+            }
+            if (this.mediaId !== id) return;
+            this.trimStart =
+              settings.skip_silence && analysis ? Math.max(0, analysis.start_secs) : 0;
+            this.trimEnd =
+              settings.skip_silence &&
+              analysis &&
+              analysis.end_secs > analysis.start_secs + 0.5
+                ? analysis.end_secs
+                : null;
+            const gainDb =
+              settings.normalize_loudness && analysis?.lufs != null
+                ? Math.max(
+                    -12,
+                    Math.min(6, settings.loudness_target_lufs - analysis.lufs),
+                  )
+                : 0;
+            this.applyClientGain(audio, gainDb, media.url);
+            const applyTrim = () => {
+              if (this.mediaId !== id) return;
+              const desired = this.trimStart + Math.max(0, position);
+              if (position > 0 || audio.currentTime < this.trimStart) {
+                try {
+                  audio.currentTime = desired;
+                } catch {
+                  /* ignore a seek that raced with loading */
+                }
+              }
+              this.elapsed = Math.max(0, position);
+              this.duration = Math.max(
+                0,
+                (this.trimEnd ?? audio.duration) - this.trimStart,
+              );
             };
-            audio.addEventListener("loadedmetadata", done, { once: true });
-            setTimeout(done, 2500);
-          });
+            if (audio.readyState >= 1) applyTrim();
+            else audio.addEventListener("loadedmetadata", applyTrim, { once: true });
+          })();
         }
-        const startAt = this.trimStart + Math.max(0, position);
-        if (startAt > 0) {
-          try {
-            audio.currentTime = startAt;
-          } catch {
-            /* metadata not ready; play from the start */
-          }
-        }
-        this.elapsed = Math.max(0, position);
-        if (Number.isFinite(audio.duration)) {
-          this.duration = Math.max(0, (this.trimEnd ?? audio.duration) - this.trimStart);
-        }
-        await audio.play();
+
         try {
           const song = await invoke<{
             id: string;
@@ -524,6 +537,7 @@ class PlayerStore {
               cover_url?: string;
             };
           }>("get_song", { id });
+          if (this.mediaId !== id) return;
           this.title = song.metadata?.display_title ?? song.title;
           this.artist = song.metadata?.artist_override ?? song.artist;
           this.album = song.metadata?.album_override ?? song.album ?? "";

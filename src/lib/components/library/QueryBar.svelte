@@ -8,6 +8,7 @@
   } from "$lib/stores/libraryQuery.svelte";
   import { QUERY_FIELDS } from "$lib/queryFields";
   import QueryInput from "$lib/components/library/QueryInput.svelte";
+  import ConfirmDialog from "$lib/ui/ConfirmDialog.svelte";
 
   // The editor edits a draft; Enter applies it to the list.
   let draft = $state("");
@@ -19,6 +20,7 @@
   let dropTimer: ReturnType<typeof setTimeout> | undefined;
   let inputFocused = false;
   let panelHovered = false;
+  let clearHistoryOpen = $state(false);
 
   let savedMatch = $derived(
     libraryQuery.saved.find((preset) => preset.query.trim() === draft.trim()),
@@ -278,7 +280,7 @@
             <button
               class="drop-clear"
               onmousedown={(e) => e.preventDefault()}
-              onclick={() => libraryQuery.clearHistory()}
+              onclick={() => (clearHistoryOpen = true)}
             >
               清除
             </button>
@@ -340,6 +342,14 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  bind:open={clearHistoryOpen}
+  title="清空查询历史？"
+  message="将删除全部查询历史记录（收藏的查询会保留）。"
+  confirmLabel="清空"
+  onconfirm={() => void libraryQuery.clearHistory()}
+/>
 
 <style>
   .query-bar {

@@ -420,6 +420,28 @@ async function resolve(params) {
   return fallback;
 }
 
+async function neteasePublicStream(id) {
+  // The public 128k endpoint used by the LX source works without a login
+  // cookie for standard-quality songs; Meting's /song/url often returns
+  // "login required" for the same track.
+  try {
+    const response = await fetch('https://music.163.com/api/song/enhance/player/url', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Referer: 'https://music.163.com/',
+      },
+      body: 'ids=' + encodeURIComponent('[' + id + ']') + '&br=128000',
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.data?.[0]?.url || null;
+  } catch {
+    return null;
+  }
+}
+
 async function stream(params) {
   const platform = params.platform;
   const sourceId = params.source_id;
@@ -431,6 +453,20 @@ async function stream(params) {
   }
   if (!['netease', 'tencent', 'kugou'].includes(platform)) {
     throw new Error('unsupported platform: ' + platform);
+  }
+
+  if (platform === 'netease') {
+    const url = await neteasePublicStream(sourceId);
+    if (url) {
+      return {
+        type: 'pipe',
+        cmd: streamCommand(url, {
+          Referer: 'https://music.163.com/',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+        }),
+      };
+    }
   }
 
   const instance = meting(platform);
