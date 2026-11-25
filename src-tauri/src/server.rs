@@ -458,8 +458,17 @@ async fn image_proxy(Query(query): Query<ImageQuery>) -> Result<Response, Status
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Hotlink-protected CDNs reject requests without a Referer. Fall back to
+    // the image host's own origin when the client did not provide one.
+    let referer = query.referer.clone().or_else(|| {
+        reqwest::Url::parse(&query.url).ok().and_then(|parsed| {
+            let host = parsed.host_str()?;
+            Some(format!("{}://{}/", parsed.scheme(), host))
+        })
+    });
+
     let key = blake3::hash(
-        format!("{}|{}", query.url, query.referer.as_deref().unwrap_or("")).as_bytes(),
+        format!("{}|{}", query.url, referer.as_deref().unwrap_or("")).as_bytes(),
     )
     .to_hex()
     .to_string();
@@ -474,25 +483,35 @@ async fn image_proxy(Query(query): Query<ImageQuery>) -> Result<Response, Status
         return image_response(content_type.trim(), bytes);
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut request = client
         .get(&query.url)
-        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-    if let Some(referer) = &query.referer {
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36")
+        .header(reqwest::header::ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+    if let Some(referer) = &referer {
         request = request.header(reqwest::header::REFERER, referer);
     }
     let response = request.send().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
     if !response.status().is_success() {
         return Err(StatusCode::BAD_GATEWAY);
     }
-    let content_type = response
+    let mut content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("image/jpeg")
         .to_string();
     if !content_type.starts_with("image/") {
-        return Err(StatusCode::BAD_GATEWAY);
+        if content_type.eq_ignore_ascii_case("application/octet-stream")
+            || content_type.eq_ignore_ascii_case("binary/octet-stream")
+        {
+            content_type = "image/jpeg".to_string();
+        } else {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
     }
     let bytes = response
         .bytes()
@@ -688,11 +707,21 @@ async fn set_play_mode(
 }
 
 async fn player_status(State(state): State<ServerState>) -> Json<Value> {
-    let mut status = {
-        let mut player = state.app.player.lock().await;
-        player.check_alive().await;
-        player.refresh().await;
-        player.status()
+    let cached = state
+        .app
+        .player_status
+        .read()
+        .map(|status| status.clone())
+        .unwrap_or_default();
+    let mut status = match state.app.player.try_lock() {
+        Ok(mut player) => {
+            player.check_alive().await;
+            player.refresh().await;
+            player.status()
+        }
+        // A track is being resolved/opened under the player lock; use the
+        // published snapshot so clients see Loading immediately.
+        Err(_) => cached,
     };
     if status.media_id.is_none() {
         if let Ok(Some((song_id, position))) = state.app.db.load_last_played().await {
@@ -2251,18 +2280,12 @@ async fn static_cache_headers(req: Request, next: Next) -> Response {
 }
 
 fn cors_layer() -> CorsLayer {
-    let origins = [
-        "tauri://localhost",
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-        "http://localhost:1420",
-        "http://127.0.0.1:1420",
-    ]
-    .iter()
-    .filter_map(|origin| origin.parse::<HeaderValue>().ok())
-    .collect::<Vec<_>>();
+    // Mirror the request origin: the web client can be served from any dev or
+    // deployment origin, and images/API calls otherwise fail preflight. The
+    // response echoes one concrete origin, which keeps credentialed requests
+    // valid (a wildcard would not).
     CorsLayer::new()
-        .allow_origin(origins)
+        .allow_origin(tower_http::cors::AllowOrigin::mirror_request())
         .allow_credentials(true)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
@@ -2336,15 +2359,26 @@ pub async fn run_from_args(args: Vec<String>) -> Result<(), String> {
     let (sse_tx, _) = crate::features::network::sse::new_channel();
     let audit_path = data_dir.join("audit.log");
     let tick_player = app.player.clone();
+    let tick_cache = app.player_status.clone();
     let tick_tx = sse_tx.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         loop {
             ticker.tick().await;
-            let mut player = tick_player.lock().await;
-            player.check_alive().await;
-            player.refresh().await;
-            let status = player.status();
+            // try_lock: while a stream is opening the player lock is held, and
+            // the ticker still has to publish the Loading snapshot instead of
+            // stalling (which froze every SSE client on the previous track).
+            let status = match tick_player.try_lock() {
+                Ok(mut player) => {
+                    player.check_alive().await;
+                    player.refresh().await;
+                    player.status()
+                }
+                Err(_) => tick_cache
+                    .read()
+                    .map(|status| status.clone())
+                    .unwrap_or_default(),
+            };
             if status.state != crate::features::player::PlaybackState::Stopped {
                 sse::publish_status(&tick_tx, &status);
             }

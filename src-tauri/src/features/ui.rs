@@ -578,13 +578,25 @@ pub async fn scan_library(
 
 #[tauri::command]
 pub async fn get_player_status(state: tauri::State<'_, AppState>) -> Result<PlaybackStatus, String> {
-    let mut player = state.player.lock().await;
-    // Detect a natural end (mpv exited on its own) so the frontend can
-    // advance the queue, then pull duration/progress so the UI shows real
-    // track length instead of 0:00.
-    player.check_alive().await;
-    player.refresh().await;
-    let mut status = player.status();
+    let cached = state
+        .player_status
+        .read()
+        .map(|status| status.clone())
+        .unwrap_or_default();
+    // Never wait for the player lock: resolving an online stream holds it for
+    // seconds, and that is exactly when the UI needs to learn that the new
+    // track is loading. Fall back to the published snapshot instead.
+    let mut status = match state.player.try_lock() {
+        Ok(mut player) => {
+            // Detect a natural end (mpv exited on its own) so the frontend can
+            // advance the queue, then pull duration/progress so the UI shows
+            // real track length instead of 0:00.
+            player.check_alive().await;
+            player.refresh().await;
+            player.status()
+        }
+        Err(_) => cached,
+    };
 
     // If nothing is actually loaded but we remember a last-played song, report
     // it as a paused/memory state so the UI keeps showing where the user left
@@ -2002,7 +2014,7 @@ pub async fn query_field_values(
     prefix: String,
     limit: usize,
 ) -> Result<Vec<String>, String> {
-    let limit = limit.clamp(1, 50);
+    let limit = limit.clamp(1, 200);
     if field == "song_metadata" {
         let mut values = Vec::new();
         for name in ["title", "artist", "album"] {
@@ -2016,7 +2028,10 @@ pub async fn query_field_values(
         }
         values.sort_by_key(|value| value.to_lowercase());
         values.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-        values.truncate(limit);
+        // Keep more than one field's worth: the union of title/artist/album
+        // would otherwise be cut to `limit` values and artist/album
+        // completions could never be reached.
+        values.truncate((limit * 3).min(200));
         return Ok(values);
     }
     state
@@ -2036,7 +2051,7 @@ pub async fn tag_values(
 ) -> Result<Vec<String>, String> {
     state
         .db
-        .tag_values(&namespace, &prefix, limit.clamp(1, 50))
+        .tag_values(&namespace, &prefix, limit.clamp(1, 200))
         .await
         .map_err(|e| e.to_string())
 }
@@ -2145,24 +2160,53 @@ pub async fn fetch_remote_image(
     url: String,
     referer: Option<String>,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    /// Many CDNs reject a request without a Referer. When the caller does not
+    /// know a platform-specific one, send the image host's own origin, which
+    /// is accepted by the common hotlink rules.
+    fn default_referer(url: &str) -> Option<String> {
+        let parsed = reqwest::Url::parse(url).ok()?;
+        let host = parsed.host_str()?;
+        Some(format!("{}://{}/", parsed.scheme(), host))
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
     let mut request = client
         .get(&url)
-        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-    if let Some(referer) = referer {
+        .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36")
+        .header(reqwest::header::ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+    if let Some(referer) = referer.or_else(|| default_referer(&url)) {
         request = request.header(reqwest::header::REFERER, referer);
     }
     let response = request.send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    let content_type = response
+    let mut content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("image/jpeg")
         .to_string();
+    if !content_type.starts_with("image/") {
+        // Some CDNs serve valid images as a generic binary stream; an HTML
+        // error page (the usual hotlink rejection) is still rejected.
+        if content_type.eq_ignore_ascii_case("application/octet-stream")
+            || content_type.eq_ignore_ascii_case("binary/octet-stream")
+        {
+            content_type = "image/jpeg".to_string();
+        } else {
+            return Err(format!("not an image: {content_type}"));
+        }
+    }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    // A data URL is embedded in the DOM; cap it so an unexpectedly huge
+    // response cannot freeze the webview.
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("image is too large".to_string());
+    }
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{content_type};base64,{encoded}"))

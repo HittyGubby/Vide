@@ -557,22 +557,34 @@
    */
   function coverSrc(item: SearchResultItem): string {
     if (!item.cover_url) return "";
-    const proxy = remoteImageUrl(item.cover_url, coverReferer(item) ?? undefined);
-    return item.platform === "bilibili" && proxy ? proxy : item.cover_url;
+    // Use the proxy whenever one is available (web / remote clients): it
+    // applies the platform Referer and caches the bytes, which is what makes
+    // hotlink-protected covers load at all.
+    return remoteImageUrl(item.cover_url, coverReferer(item) ?? undefined) ?? item.cover_url;
   }
 
   async function proxyCoverImage(img: HTMLImageElement, item: SearchResultItem) {
-    if (img.dataset.proxied) {
+    const url = item.cover_url;
+    if (!url) {
       img.style.display = "none";
       return;
     }
-    img.dataset.proxied = "1";
+    // Reused rows keep dataset entries: tie the failure mark to the URL.
+    if (img.dataset.failedUrl === url) {
+      img.style.display = "none";
+      return;
+    }
+    img.style.display = "";
     try {
-      img.src = await invoke<string>("fetch_remote_image", {
-        url: item.cover_url,
+      const proxied = await invoke<string>("fetch_remote_image", {
+        url,
         referer: coverReferer(item),
       });
+      if (!proxied || proxied === img.src) throw new Error("proxy unavailable");
+      img.dataset.failedUrl = "";
+      img.src = proxied;
     } catch {
+      img.dataset.failedUrl = url;
       img.style.display = "none";
     }
   }

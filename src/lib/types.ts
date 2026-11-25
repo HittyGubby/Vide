@@ -32,6 +32,8 @@ export interface SongMetadata {
   added_time?: string;
   duration?: number;
   cover_url?: string;
+  /** How many times playback was started for this song. */
+  play_count?: number;
   file_name?: string;
   display_title?: string;
   artist_override?: string;
@@ -75,7 +77,7 @@ export interface SongDetails {
 }
 
 /* ── Playback Status ─────────────────────────────────── */
-export type PlaybackState = 'Stopped' | 'Playing';
+export type PlaybackState = 'Stopped' | 'Loading' | 'Playing' | 'Paused' | 'Ended';
 
 export interface PlaybackStatus {
   state: PlaybackState;
@@ -241,6 +243,9 @@ export interface AppSettings {
   shortcuts: ShortcutSettings;
   seek_step_secs: number;
   volume_step: number;
+  /** Last playback volume (0..=100), restored at startup. */
+  volume: number;
+  muted: boolean;
   scan_extensions: string[];
   skip_silence: boolean;
   normalize_loudness: boolean;

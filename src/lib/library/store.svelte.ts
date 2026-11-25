@@ -27,6 +27,8 @@ class LibraryStore {
   private loadedQuery: string | null = null;
   private hasLoaded = false;
   private sortPrefsLoaded = false;
+  /** Monotonic request id: a slow, older load must not overwrite a newer one. */
+  private loadSeq = 0;
 
   /** The active sort: a query SORT BY wins over the column-header fallback. */
   headerSort = $derived.by((): { field: LibraryColumn; asc: boolean } | null => {
@@ -61,18 +63,25 @@ class LibraryStore {
   }
 
   async load(): Promise<void> {
+    const seq = ++this.loadSeq;
     this.loading = true;
     this.error = null;
     try {
       const query = libraryQuery.filter.trim();
-      this.songs = query
+      const songs = query
         ? await invoke<Song[]>("search_songs", { query })
         : await invoke<Song[]>("list_library_songs");
+      // A query typed while this request was in flight already started a new
+      // load; applying this (stale) result would show songs that do not match
+      // the query currently in the bar.
+      if (seq !== this.loadSeq) return;
+      this.songs = songs;
     } catch (e) {
+      if (seq !== this.loadSeq) return;
       this.error = String(e);
       this.songs = [];
     } finally {
-      this.loading = false;
+      if (seq === this.loadSeq) this.loading = false;
     }
   }
 
@@ -109,12 +118,28 @@ class LibraryStore {
       "artist",
       "album",
       "added",
+      "plays",
       "time",
     ];
     if (fields.includes(saved.field as LibraryColumn)) {
       this.sortField = saved.field as LibraryColumn;
     }
     if (typeof saved.asc === "boolean") this.sortAsc = saved.asc;
+  }
+
+  /** Reflect one playback start locally so the column updates immediately. */
+  bumpPlayCount(id: string): void {
+    this.songs = this.songs.map((song) =>
+      song.id === id
+        ? {
+            ...song,
+            metadata: {
+              ...song.metadata,
+              play_count: (song.metadata.play_count ?? 0) + 1,
+            },
+          }
+        : song,
+    );
   }
 
   applyMetadata(updated: Song): void {

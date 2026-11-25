@@ -19,7 +19,7 @@
   import LyricsView from "$lib/components/lyrics/LyricsView.svelte";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import Dialog from "$lib/ui/Dialog.svelte";
-  import { loadCoverWithFallback } from "$lib/cover";
+  import { coverSrc, loadCoverWithFallback } from "$lib/cover";
   import { formatTime } from "$lib/songDisplay";
   import { firstLyricText } from "$lib/lyrics";
   import { invoke } from "$lib/transport";
@@ -128,7 +128,7 @@
         <div class="cover">
           {#if player.cover}
             <img
-              src={player.cover}
+              src={coverSrc(player.cover)}
               alt=""
               onerror={(e) => loadCoverWithFallback(e.currentTarget as HTMLImageElement)}
             />
@@ -328,6 +328,8 @@
     flex-direction: column;
     align-items: center;
     gap: 1px;
+    user-select: text;
+    -webkit-user-select: text;
   }
   .mp-title,
   .mp-sub {
@@ -405,6 +407,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    user-select: text;
+    -webkit-user-select: text;
   }
   .song-sub,
   .song-album {
@@ -416,6 +420,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    user-select: text;
+    -webkit-user-select: text;
   }
   .song-album {
     font-size: 11px;

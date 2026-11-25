@@ -25,6 +25,7 @@
   import { libraryStore } from "$lib/library/store.svelte";
   import { SelectionStore } from "$lib/library/selection.svelte";
   import { virtualSlice as computeVirtualSlice } from "$lib/virtual";
+  import { listScrollMemory } from "$lib/library/listScroll";
   import type { LibraryColumn } from "$lib/library/sorting";
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import ContextMenu from "$lib/components/song/ContextMenu.svelte";
@@ -55,6 +56,7 @@
     { id: "artist", label: "歌手", defWidth: 130, min: 80 },
     { id: "album", label: "专辑", defWidth: 140, min: 80 },
     { id: "added", label: "添加时间", defWidth: 160, min: 100 },
+    { id: "plays", label: "播放次数", defWidth: 72, min: 56 },
     { id: "time", label: "时长", fixed: true, defWidth: 52, min: 52 },
   ];
 
@@ -83,7 +85,9 @@
       clearTimeout(scrollSaveTimer);
       scrollSaveTimer = undefined;
     }
-    if (listEl) void saveClientState("list.scroll", { top: listEl.scrollTop });
+    const top = listEl ? listEl.scrollTop : listScrollMemory.top;
+    listScrollMemory.top = top;
+    void saveClientState("list.scroll", { top });
   });
 
   let dragColId = $state<string | null>(null);
@@ -189,21 +193,28 @@
     if (listEl) {
       viewTop = listEl.scrollTop;
       viewHeight = listEl.clientHeight || 0;
+      listScrollMemory.top = listEl.scrollTop;
     }
     clearHover();
     saveScroll();
   }
 
-  // Re-measure the scrollbar width whenever the list element attaches or the
-  // rendered rows change, so the header's right padding stays aligned.
+  // Re-measure (and re-sync) whenever the list element attaches or the row
+  // set changes. A new query replaces the rows and remounts the scroller, so
+  // its scrollTop is 0 while viewTop still held the previous offset: the
+  // virtual window then rendered rows far below the viewport and the list
+  // looked blank (with a scrollbar) until the user scrolled.
   $effect(() => {
-    const _tick = viewHeight;
     const _el = listEl;
     const _n = sortedSongs.length;
-    if (_el) {
-      // Runs after DOM update.
-      queueMicrotask(() => measureScrollbar());
-    }
+    if (!_el) return;
+    // Runs after DOM update.
+    queueMicrotask(() => {
+      if (listEl !== _el) return;
+      measureScrollbar();
+      viewHeight = _el.clientHeight || 0;
+      viewTop = _el.scrollTop;
+    });
   });
 
   // Scroll position is UI state, stored in SQLite (client:list.scroll).
@@ -236,21 +247,33 @@
         /* ignore corrupt legacy data */
       }
     }
-    const top = typeof saved === "number" ? saved : saved?.top;
+    const stored = typeof saved === "number" ? saved : saved?.top;
     if (saved != null) localStorage.removeItem(SCROLL_KEY);
+    // A position remembered in this session wins: the SQLite read can resolve
+    // after a route switch and must not rewind a list the user just scrolled.
+    const top = listScrollMemory.top > 0 ? listScrollMemory.top : stored;
     if (typeof top !== "number") return;
     if (platform.mobileUI) {
       mobileList?.scrollToOffset(top);
       return;
     }
-    if (listEl) {
+    const apply = () => {
+      if (!listEl) return;
       const max = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
+      // The virtual list may still be measuring on the first frame. Leave the
+      // target untouched when there is no scrollable range yet.
+      if (max === 0 && top > 0) return;
       listEl.scrollTop = Math.min(Math.max(0, top), max);
       // Use the browser-clamped value: setting a stale saved offset can make
       // the virtual window render rows at the wrong place.
       viewTop = listEl.scrollTop;
       viewHeight = listEl.clientHeight || 0;
-    }
+      listScrollMemory.top = listEl.scrollTop;
+    };
+    apply();
+    await tick();
+    apply();
+    requestAnimationFrame(apply);
   }
 
   // Locate the given song id in the CURRENT list (current query/filter):
@@ -411,6 +434,7 @@
     { id: "artist", label: "歌手" },
     { id: "album", label: "专辑" },
     { id: "added", label: "加入时间" },
+    { id: "plays", label: "播放次数" },
     { id: "time", label: "时长" },
   ];
 
@@ -441,6 +465,11 @@
       player.artist = displayArtist(song);
       player.album = displayAlbum(song);
       player.cover = song.metadata?.cover_url ?? null;
+      player.elapsed = 0;
+      player.duration = 0;
+      player.isPlaying = false;
+      player.loading = true;
+      libraryStore.bumpPlayCount(song.id);
       await player.playFromList(
         sortedSongs.map((s) => ({
           id: s.id,
@@ -451,6 +480,7 @@
         song.id,
       );
     } catch (e) {
+      player.loading = false;
       console.error("play error:", e);
     }
   }
@@ -527,6 +557,9 @@
   }
 
   function onRowClick(song: Song, index: number, e: MouseEvent) {
+    // Selecting text (e.g. copying a title) must not start playback.
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
     if (e.ctrlKey || e.metaKey) {
       selection.toggle(song, index);
       return;
@@ -640,6 +673,8 @@
   }
 
   function scheduleHover(song: Song, e: MouseEvent) {
+    // A pressed button means the user is selecting text, not hovering.
+    if (e.buttons !== 0) return;
     clearHover();
     const x = e.clientX;
     const y = e.clientY;
@@ -942,6 +977,10 @@
                     class="cell-added"
                     title={song.metadata.added_time ?? ""}
                   >{song.metadata.added_time ?? "—"}</span>
+                {:else if column.id === "plays"}
+                  <span class="cell-plays" title="播放次数">
+                    {song.metadata.play_count ?? 0}
+                  </span>
                 {:else if column.id === "time"}
                   <span class="cell-time">{formatDuration(song.metadata.duration)}</span>
                 {/if}
@@ -1173,6 +1212,8 @@
     overflow-y: auto;
     overflow-x: hidden;
     min-width: 0;
+    /* Rows are copyable; the row click handler ignores an active selection. */
+    user-select: text;
     /* Scroll anchoring fights a virtual list when rows/padding change above
        the viewport; it can cause a self-sustaining scroll loop. */
     overflow-anchor: none;
@@ -1240,6 +1281,11 @@
 
   .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cell-time { color: color-mix(in oklch, var(--color-base-content) 60%, transparent); font-size: 12px; }
+  .cell-plays {
+    color: color-mix(in oklch, var(--color-base-content) 62%, transparent);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
   .cell-added {
     color: color-mix(in oklch, var(--color-base-content) 62%, transparent);
     font-size: 12px;

@@ -92,16 +92,26 @@
     return namespacesCache;
   }
 
-  /** Completion that inserts a value with quotes/backslashes escaped. */
+  /**
+   * Completion that inserts a value with quotes/backslashes escaped. Values
+   * containing whitespace, parentheses or a leading "!" are wrapped in quotes
+   * so the inserted text stays one token in the query grammar.
+   */
   function valueCompletion(label: string): Completion {
+    const needsQuotes =
+      /[\s()"]/.test(label) ||
+      label.startsWith("!") ||
+      /^(AND|OR|NOT|CONTAINS|SORT|BY|ASC|DESC)$/i.test(label);
     return {
       label,
       type: "text",
       apply: (editor, _completion, from, to) => {
         const escaped = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const insert = needsQuotes ? '"' + escaped + '"' : escaped;
+        const anchor = needsQuotes ? from + insert.length - 1 : from + insert.length;
         editor.dispatch({
-          changes: { from, to, insert: escaped },
-          selection: { anchor: from + escaped.length },
+          changes: { from, to, insert },
+          selection: { anchor },
         });
       },
     };
@@ -112,7 +122,7 @@
       return await invoke<string[]>("query_field_values", {
         field,
         prefix,
-        limit: 20,
+        limit: 50,
       });
     } catch {
       return [];
@@ -124,7 +134,7 @@
       return await invoke<string[]>("tag_values", {
         namespace,
         prefix,
-        limit: 20,
+        limit: 50,
       });
     } catch {
       return [];
@@ -136,22 +146,26 @@
   ): Promise<CompletionResult | null> {
     const before = context.state.sliceDoc(0, context.pos);
 
-    // Inside a CONTAINS "..." value: suggest values of that field.
-    const contains = /([A-Za-z_][A-Za-z0-9_]*)\s+CONTAINS\s+"([^"]*)$/i.exec(before);
+    // Inside a CONTAINS value (quoted or bare): suggest values of that field.
+    const contains =
+      /([A-Za-z_][A-Za-z0-9_]*)\s+CONTAINS\s+(?:"([^"]*)|([^\s()"]*))$/i.exec(before);
     if (contains) {
       const field = contains[1].toLowerCase();
-      const prefix = contains[2];
+      const quoted = contains[2] !== undefined;
+      const prefix = contains[2] ?? contains[3] ?? "";
       const values = await fieldValues(field, prefix);
       if (!values.length) return null;
       return {
         from: context.pos - prefix.length,
         options: values.map(valueCompletion),
-        validFor: /^[\w .:/-]*$/,
+        validFor: quoted ? /^[^"]*$/ : /^[^\s()"]*$/,
       };
     }
 
-    // After "namespace:": suggest values of that tag namespace.
-    const tag = /(?:^|[\s(])([A-Za-z0-9_-]+):([A-Za-z0-9_.-]*)$/.exec(before);
+    // After "namespace:": suggest values of that tag namespace. Values may
+    // contain symbols (playlist:Best!) and non-ASCII text, so only whitespace,
+    // parentheses and quotes end the token.
+    const tag = /(?:^|[\s(])([A-Za-z0-9_-]+):([^\s()"]*)$/.exec(before);
     if (tag) {
       const prefix = tag[2];
       const values = await tagValues(tag[1], prefix);
@@ -159,7 +173,7 @@
       return {
         from: context.pos - prefix.length,
         options: values.map(valueCompletion),
-        validFor: /^[\w.-]*$/,
+        validFor: /^[^\s()"]*$/,
       };
     }
 
@@ -292,7 +306,9 @@
             override: [completionSource],
             activateOnTyping: true,
             icons: false,
-            maxRenderedOptions: 20,
+            // Render the whole suggestion list: a lower cap made later
+            // (alphabetically higher) entries unreachable even by scrolling.
+            maxRenderedOptions: 200,
           }),
           closeBrackets(),
           keymap.of([

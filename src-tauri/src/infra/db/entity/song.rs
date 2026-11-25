@@ -11,6 +11,8 @@ pub struct Model {
     pub duration: Option<f64>,
     pub added_time: Option<String>,
     pub metadata_json: String,
+    /// Number of times playback was started for this song.
+    pub play_count: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

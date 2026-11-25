@@ -118,6 +118,13 @@ pub struct AppSettings {
     /// Volume units changed by the volume-up / volume-down shortcuts.
     #[serde(default = "default_volume_step")]
     pub volume_step: u32,
+    /// Last playback volume (0..=100). Applied to mpv on every start so the
+    /// volume survives a restart instead of resetting to 100.
+    #[serde(default = "default_volume")]
+    pub volume: u32,
+    /// Last mute state, restored with the volume.
+    #[serde(default)]
+    pub muted: bool,
     /// File extensions included by the media scanner (without a dot).
     #[serde(default = "default_scan_extensions")]
     pub scan_extensions: Vec<String>,
@@ -301,6 +308,10 @@ fn default_volume_step() -> u32 {
     5
 }
 
+fn default_volume() -> u32 {
+    80
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
@@ -320,6 +331,8 @@ impl Default for AppSettings {
             shortcuts: ShortcutSettings::default(),
             seek_step_secs: default_seek_step_secs(),
             volume_step: default_volume_step(),
+            volume: default_volume(),
+            muted: false,
             scan_extensions: default_scan_extensions(),
             skip_silence: false,
             normalize_loudness: false,

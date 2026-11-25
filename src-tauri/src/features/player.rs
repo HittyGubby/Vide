@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,9 @@ impl Default for PlayMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PlaybackState {
     Stopped,
+    /// A track was selected and is being resolved/opened. The UI has already
+    /// switched to the new song, but its position stays at 0 until mpv starts.
+    Loading,
     Playing,
     /// Playback is loaded but currently paused (song still selected).
     Paused,
@@ -50,8 +53,14 @@ pub enum PlaybackState {
     Ended,
 }
 
+impl Default for PlaybackState {
+    fn default() -> Self {
+        PlaybackState::Stopped
+    }
+}
+
 /// Result of a playback operation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct PlaybackStatus {
     pub state: PlaybackState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +111,11 @@ pub struct PlayerManager {
     trim_start: f64,
     /// Absolute source position where the audible region ends.
     trim_end: Option<f64>,
+    /// Published copy of `status()` so a status poller can read the current
+    /// state without acquiring the player lock. Resolving an online stream can
+    /// hold that lock for seconds; without this snapshot the UI kept showing
+    /// the previous track (and its running progress) for the whole load.
+    status_cache: Arc<RwLock<PlaybackStatus>>,
 }
 
 /// What to apply to mpv for the current track.
@@ -120,7 +134,9 @@ impl PlayerManager {
         plugins: Option<Arc<crate::features::plugin::PluginManager>>,
         data_dir: PathBuf,
     ) -> Self {
+        let status_cache = Arc::new(RwLock::new(PlaybackStatus::default()));
         PlayerManager {
+            status_cache,
             child: None,
             ipc_sock: None,
             #[cfg(unix)]
@@ -142,9 +158,36 @@ impl PlayerManager {
         }
     }
 
+    /// Shared published status (see `status_cache`).
+    pub fn status_cache(&self) -> Arc<RwLock<PlaybackStatus>> {
+        self.status_cache.clone()
+    }
+
+    /// Publish the current state for readers that cannot take the player lock.
+    fn publish_status(&self) {
+        if let Ok(mut cached) = self.status_cache.write() {
+            *cached = self.status();
+        }
+    }
+
+    /// Kill the current mpv process without touching the published status.
+    /// Used when switching tracks, where the new Loading/Playing status is
+    /// published immediately afterwards (publishing Stopped in between would
+    /// flash "nothing playing" across the UI).
+    fn kill_current(&mut self) {
+        #[cfg(unix)]
+        self.kill_process_group();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+        }
+        if let Some(sock) = self.ipc_sock.take() {
+            let _ = std::fs::remove_file(&sock);
+        }
+    }
+
     /// Start playing a stream from a descriptor.
     pub async fn play(&mut self, descriptor: &StreamDescriptor) -> Result<PlaybackStatus, String> {
-        self.stop().await;
+        self.kill_current();
 
         let result = match descriptor {
             StreamDescriptor::UrlStream { id, url, headers } => {
@@ -165,6 +208,7 @@ impl PlayerManager {
             Ok(status) => Ok(status),
             Err(e) => {
                 self.state = PlaybackState::Stopped;
+                self.publish_status();
                 Err(e)
             }
         }
@@ -268,8 +312,24 @@ impl PlayerManager {
         let sock = Self::ipc_path();
         let _ = std::fs::remove_file(&sock);
 
+        // Restore the user's volume/mute for every new mpv process. Without
+        // this a fresh mpv starts at 100% and the volume looks reset on every
+        // app launch (and on every track switch).
+        let (volume, muted) = match &self.db {
+            Some(db) => db
+                .load_app_settings()
+                .await
+                .map(|settings| (settings.volume.min(100) as f64, settings.muted))
+                .unwrap_or((80.0, false)),
+            None => (80.0, false),
+        };
+
         let mut cmd = tokio::process::Command::new("mpv");
         cmd.arg("--no-video");
+        cmd.arg(format!("--volume={volume:.0}"));
+        if muted {
+            cmd.arg("--mute=yes");
+        }
         cmd.arg("--audio-display=no");
         cmd.arg("--cache=yes");
         cmd.arg("--force-seekable=yes");
@@ -311,7 +371,6 @@ impl PlayerManager {
         // (including any pipe children) on stop / app exit.
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
         let child = cmd.spawn().map_err(|e| format!("failed to spawn mpv: {e}"))?;
@@ -331,6 +390,7 @@ impl PlayerManager {
         self.trim_end = effects.end.filter(|end| *end > effects.start + 0.5);
 
         debug!("playing url: {} ({})", id, url);
+        self.publish_status();
         Ok(self.status())
     }
 
@@ -764,8 +824,45 @@ impl PlayerManager {
             // Do not leave a stale cursor behind for repeat-one/shuffle.
             self.current_index = -1;
         }
-        let descriptor = self.descriptor_for(&SongId(id.to_string())).await?;
-        self.play(&descriptor).await?;
+        // Switch the UI to the new track before resolving its stream. Finding
+        // a descriptor (and downloading an online track into the cache) can
+        // take seconds; until now the player bar kept showing the previous
+        // song and its progress kept running for that whole time.
+        self.kill_current();
+        self.state = PlaybackState::Loading;
+        self.media_id = Some(id.to_string());
+        self.elapsed = 0.0;
+        self.duration = None;
+        self.trim_start = 0.0;
+        self.trim_end = None;
+        self.publish_status();
+
+        let descriptor = match self.descriptor_for(&SongId(id.to_string())).await {
+            Ok(descriptor) => descriptor,
+            Err(e) => {
+                self.state = PlaybackState::Stopped;
+                self.media_id = None;
+                self.elapsed = 0.0;
+                self.duration = None;
+                self.publish_status();
+                return Err(e);
+            }
+        };
+        if let Err(e) = self.play(&descriptor).await {
+            self.state = PlaybackState::Stopped;
+            self.media_id = None;
+            self.elapsed = 0.0;
+            self.duration = None;
+            self.publish_status();
+            return Err(e);
+        }
+        // Count the playback start (the songs.play_count column is
+        // authoritative). A play that never opened does not reach this line.
+        if let Some(db) = &self.db {
+            if let Err(e) = db.increment_play_count(&SongId(id.to_string())).await {
+                warn!("failed to increment play count: {e}");
+            }
+        }
         // Only write when the cursor actually moved. Playing a song that is
         // outside the current queue must not overwrite the saved queue.
         if cursor_changed {
@@ -815,6 +912,7 @@ impl PlayerManager {
         if let Some(t) = self.fetch_time_pos().await {
             self.elapsed = t;
         }
+        self.publish_status();
         Ok(self.status())
     }
 
@@ -836,6 +934,7 @@ impl PlayerManager {
         if let Some(t) = self.fetch_time_pos().await {
             self.elapsed = t;
         }
+        self.publish_status();
         Ok(self.status())
     }
 
@@ -845,7 +944,10 @@ impl PlayerManager {
             PlaybackState::Playing => self.pause().await,
             PlaybackState::Paused => self.resume().await,
             // Ended already has no live mpv; the frontend restarts the track.
-            PlaybackState::Ended | PlaybackState::Stopped => Ok(self.status()),
+            // Loading has no mpv yet, so a toggle is a no-op until it starts.
+            PlaybackState::Ended | PlaybackState::Stopped | PlaybackState::Loading => {
+                Ok(self.status())
+            }
         }
     }
 
@@ -983,6 +1085,7 @@ impl PlayerManager {
         self.elapsed = 0.0;
         self.trim_start = 0.0;
         self.trim_end = None;
+        self.publish_status();
         self.status()
     }
 
@@ -1013,7 +1116,7 @@ impl PlayerManager {
     /// survives seeks (a wall-clock tick would snap back after seeking).
     /// Called periodically by the frontend status poll.
     pub async fn refresh(&mut self) {
-        if self.state == PlaybackState::Stopped {
+        if self.state == PlaybackState::Stopped || self.state == PlaybackState::Loading {
             return;
         }
         if self.state == PlaybackState::Playing {
@@ -1024,6 +1127,7 @@ impl PlayerManager {
         if self.duration.is_none() {
             self.duration = self.fetch_duration().await;
         }
+        self.publish_status();
     }
 
     /// Check if the mpv process is still running.
@@ -1044,6 +1148,7 @@ impl PlayerManager {
                     self.child = None;
                     self.state = PlaybackState::Ended;
                     self.started_at = None;
+                    self.publish_status();
                     if !clean_exit {
                         // Loading/decoder/network failures also terminate mpv.
                         // Do not treat them as a natural end and skip tracks.

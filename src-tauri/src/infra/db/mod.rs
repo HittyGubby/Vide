@@ -53,6 +53,10 @@ async fn ensure_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
     create_table!(db, schema, backend, entity::cache_entry::Entity);
     create_table!(db, schema, backend, entity::setting::Entity);
 
+    // CREATE TABLE IF NOT EXISTS never adds columns to an existing database,
+    // so new columns are applied with an explicit ALTER TABLE migration.
+    ensure_song_columns(db).await?;
+
     // Tag usage history is independent of the songs currently in the library.
     db.execute(Statement::from_string(
         backend,
@@ -67,6 +71,30 @@ async fn ensure_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
     ))
     .await?;
 
+    Ok(())
+}
+
+/// Add columns introduced after the first release to existing databases.
+async fn ensure_song_columns(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let backend = db.get_database_backend();
+    let rows = db
+        .query_all(Statement::from_string(
+            backend,
+            "PRAGMA table_info(songs)".to_owned(),
+        ))
+        .await?;
+    let has_play_count = rows.iter().any(|row| {
+        row.try_get_by_index::<String>(1)
+            .map(|name| name == "play_count")
+            .unwrap_or(false)
+    });
+    if !has_play_count {
+        db.execute(Statement::from_string(
+            backend,
+            "ALTER TABLE songs ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0".to_owned(),
+        ))
+        .await?;
+    }
     Ok(())
 }
 
@@ -148,6 +176,9 @@ impl Database {
             duration: Set(song.metadata.duration),
             added_time: Set(Some(added_time)),
             metadata_json: Set(meta_json),
+            // Never overwritten by an upsert: the column is authoritative and
+            // only increment_play_count changes it.
+            play_count: Set(0),
         };
 
         song::Entity::insert(active)
@@ -407,6 +438,7 @@ impl Database {
         if db_song.added_time.is_some() {
             metadata.added_time = db_song.added_time.clone();
         }
+        metadata.play_count = db_song.play_count.max(0) as u64;
 
         Ok(Some(DomainSong {
             id: SongId(db_song.song_id),
@@ -420,6 +452,19 @@ impl Database {
         }))
     }
 
+
+    /// Count one playback start for a song. The column is the single source
+    /// of truth for the play count.
+    pub async fn increment_play_count(&self, id: &SongId) -> Result<(), DbErr> {
+        self.conn
+            .execute(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "UPDATE songs SET play_count = play_count + 1 WHERE song_id = ?",
+                vec![id.0.clone().into()],
+            ))
+            .await?;
+        Ok(())
+    }
 
     /// Load tags, sources and paths for a batch of songs.
     ///
@@ -533,6 +578,7 @@ impl Database {
                 if s.added_time.is_some() {
                     metadata.added_time = s.added_time.clone();
                 }
+                metadata.play_count = s.play_count.max(0) as u64;
                 DomainSong {
                     id: SongId(s.song_id),
                     title: s.title,
@@ -551,6 +597,22 @@ impl Database {
     }
 
 
+    /// Escape LIKE metacharacters and turn a prefix into a prefix pattern.
+    fn like_prefix(prefix: &str) -> String {
+        let mut escaped = String::with_capacity(prefix.len() + 2);
+        for ch in prefix.chars() {
+            match ch {
+                '%' | '_' | '\\' => {
+                    escaped.push('\\');
+                    escaped.push(ch);
+                }
+                _ => escaped.push(ch),
+            }
+        }
+        escaped.push('%');
+        escaped
+    }
+
     /// Distinct values of a text-searchable field, for query autocomplete.
     /// Field names are matched against a fixed list; the prefix is always a
     /// bound parameter.
@@ -560,21 +622,25 @@ impl Database {
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<String>, DbErr> {
+        // Prefix matching (not substring) so the list the editor shows really
+        // starts with what was typed: a substring match would fill the LIMIT
+        // with rows whose value starts with something else, and the completion
+        // list would then appear to drop every later entry.
         let sql = match field {
-            "id" => "SELECT DISTINCT song_id AS value FROM songs WHERE song_id LIKE ? ORDER BY song_id LIMIT ?",
-            "title" => "SELECT DISTINCT title AS value FROM songs WHERE title LIKE ? ORDER BY title LIMIT ?",
-            "artist" => "SELECT DISTINCT artist AS value FROM songs WHERE artist LIKE ? ORDER BY artist LIMIT ?",
-            "album" => "SELECT DISTINCT album AS value FROM songs WHERE album LIKE ? ORDER BY album LIMIT ?",
-            "source" => "SELECT DISTINCT platform AS value FROM song_sources WHERE platform LIKE ? ORDER BY platform LIMIT ?",
-            "source_id" => "SELECT DISTINCT source_id AS value FROM song_sources WHERE source_id LIKE ? ORDER BY source_id LIMIT ?",
-            "path" => "SELECT DISTINCT path AS value FROM song_paths WHERE path LIKE ? ORDER BY path LIMIT ?",
-            "tags" => "SELECT DISTINCT namespace || ':' || value AS value FROM tags WHERE namespace || ':' || value LIKE ? ORDER BY value LIMIT ?",
-            "file_name" => "SELECT DISTINCT json_extract(metadata_json, '$.file_name') AS value FROM songs WHERE json_extract(metadata_json, '$.file_name') LIKE ? ORDER BY value LIMIT ?",
-            "notes" => "SELECT DISTINCT json_extract(metadata_json, '$.notes') AS value FROM songs WHERE json_extract(metadata_json, '$.notes') LIKE ? ORDER BY value LIMIT ?",
-            "added_time" => "SELECT DISTINCT added_time AS value FROM songs WHERE added_time LIKE ? ORDER BY value LIMIT ?",
+            "id" => "SELECT DISTINCT song_id AS value FROM songs WHERE song_id LIKE ? ESCAPE '\\' ORDER BY song_id LIMIT ?",
+            "title" => "SELECT DISTINCT title AS value FROM songs WHERE title LIKE ? ESCAPE '\\' ORDER BY title LIMIT ?",
+            "artist" => "SELECT DISTINCT artist AS value FROM songs WHERE artist LIKE ? ESCAPE '\\' ORDER BY artist LIMIT ?",
+            "album" => "SELECT DISTINCT album AS value FROM songs WHERE album LIKE ? ESCAPE '\\' ORDER BY album LIMIT ?",
+            "source" => "SELECT DISTINCT platform AS value FROM song_sources WHERE platform LIKE ? ESCAPE '\\' ORDER BY platform LIMIT ?",
+            "source_id" => "SELECT DISTINCT source_id AS value FROM song_sources WHERE source_id LIKE ? ESCAPE '\\' ORDER BY source_id LIMIT ?",
+            "path" => "SELECT DISTINCT path AS value FROM song_paths WHERE path LIKE ? ESCAPE '\\' ORDER BY path LIMIT ?",
+            "tags" => "SELECT DISTINCT namespace || ':' || value AS value FROM tags WHERE namespace || ':' || value LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
+            "file_name" => "SELECT DISTINCT json_extract(metadata_json, '$.file_name') AS value FROM songs WHERE json_extract(metadata_json, '$.file_name') LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
+            "notes" => "SELECT DISTINCT json_extract(metadata_json, '$.notes') AS value FROM songs WHERE json_extract(metadata_json, '$.notes') LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
+            "added_time" => "SELECT DISTINCT added_time AS value FROM songs WHERE added_time LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
             _ => return Ok(Vec::new()),
         };
-        let like = format!("%{}%", prefix);
+        let like = Self::like_prefix(prefix);
         let statement = Statement::from_sql_and_values(
             DatabaseBackend::Sqlite,
             sql,
@@ -597,10 +663,10 @@ impl Database {
     ) -> Result<Vec<String>, DbErr> {
         let statement = Statement::from_sql_and_values(
             DatabaseBackend::Sqlite,
-            "SELECT DISTINCT value FROM tags WHERE namespace = ? AND value LIKE ? ORDER BY value LIMIT ?",
+            "SELECT DISTINCT value FROM tags WHERE namespace = ? AND value LIKE ? ESCAPE '\\' ORDER BY value LIMIT ?",
             vec![
                 namespace.to_string().into(),
-                format!("%{}%", prefix).into(),
+                Self::like_prefix(prefix).into(),
                 (limit as i64).into(),
             ],
         );
@@ -673,6 +739,7 @@ impl Database {
                 if s.added_time.is_some() {
                     metadata.added_time = s.added_time.clone();
                 }
+                metadata.play_count = s.play_count.max(0) as u64;
                 DomainSong {
                     id: SongId(s.song_id),
                     title: s.title,
@@ -1371,8 +1438,16 @@ mod tests {
         let titles = db.query_field_values("title", "Hello", 10).await.unwrap();
         assert_eq!(titles, vec!["Hello World"]);
 
-        let artists = db.query_field_values("artist", "jörk", 10).await.unwrap();
+        // Completion values are prefix matches: an interior fragment must not
+        // match, otherwise the LIMIT fills with unrelated values and later
+        // suggestions become unreachable.
+        let artists = db.query_field_values("artist", "Bj", 10).await.unwrap();
         assert_eq!(artists, vec!["Björk"]);
+        assert!(db
+            .query_field_values("artist", "jörk", 10)
+            .await
+            .unwrap()
+            .is_empty());
 
         let tags = db.tag_values("genre", "fo", 10).await.unwrap();
         assert_eq!(tags, vec!["Folk"]);

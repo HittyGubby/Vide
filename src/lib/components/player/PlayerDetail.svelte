@@ -27,7 +27,7 @@
   import TagEditor from "$lib/components/tag/TagEditor.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
   import type { Song } from "$lib/types";
-  import { loadCoverWithFallback } from "$lib/cover";
+  import { coverSrc, loadCoverWithFallback } from "$lib/cover";
   import { isTauri } from "$lib/isTauri";
   import { formatTime } from "$lib/songDisplay";
 
@@ -149,7 +149,7 @@
     <div class="detail-left">
       <div class="cover-large">
         {#if player.cover}
-          <img src={player.cover} alt="" class="cover-img" onerror={(e) => loadCoverWithFallback(e.currentTarget as HTMLImageElement)} />
+          <img src={coverSrc(player.cover)} alt="" class="cover-img" onerror={(e) => loadCoverWithFallback(e.currentTarget as HTMLImageElement)} />
         {:else}
           <span class="monogram-large">V</span>
         {/if}
@@ -339,7 +339,12 @@
   }
 
   .detail-left {
-    flex: 0 0 auto;
+    /* Fixed to the cover width: a long album/title must wrap inside the
+       column instead of stretching it and pushing text off the right edge. */
+    flex: 0 0 280px;
+    width: 280px;
+    max-width: 280px;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -365,8 +370,16 @@
   }
 
   .meta {
-    width: 100%; display: flex; flex-direction: column; gap: 4px;
+    width: 100%; max-width: 100%;
+    display: flex; flex-direction: column; gap: 4px;
     font-size: 15px; color: var(--color-base-content);
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .meta p {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   .meta-label { color: color-mix(in oklch, var(--color-base-content) 55%, transparent); margin-right: 4px; }
 
@@ -421,8 +434,21 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px;
   }
-  .detail-time { font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 70%, transparent); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .lyric-status { font-size: 12px; color: color-mix(in oklch, var(--color-base-content) 50%, transparent); max-width: 60%; }
+  .detail-time {
+    font-size: 12px;
+    color: color-mix(in oklch, var(--color-base-content) 70%, transparent);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .lyric-status {
+    font-size: 12px;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
+    max-width: 60%;
+    user-select: text;
+    -webkit-user-select: text;
+  }
 
   .transport-group { display: flex; align-items: center; gap: 8px; flex: none; }
 

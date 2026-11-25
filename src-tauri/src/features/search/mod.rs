@@ -14,9 +14,11 @@ use parser::{evaluate, parse_query, build_tag_index};
 /// Supports boolean operators (AND/OR/NOT), tag filters (ns:value),
 /// and text field filters (field CONTAINS "value").
 pub async fn search(db: &Database, query: &str) -> Result<Vec<Song>, String> {
-    // Fetch all songs (without associated data)
+    // Search the library set (paths OR tags), not every row in the songs
+    // table: online search results that were made playable but never saved
+    // into the library must not leak into a library query.
     let songs = db
-        .query_songs(&crate::infra::db::QueryFilter::default())
+        .list_library_songs()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -51,7 +53,7 @@ pub async fn fuzzy_search_songs(
     text: &str,
 ) -> Result<Vec<FuzzyMatch>, String> {
     let songs = db
-        .query_songs(&crate::infra::db::QueryFilter::default())
+        .list_library_songs()
         .await
         .map_err(|e| e.to_string())?;
 
@@ -74,7 +76,7 @@ pub async fn autocomplete(
     let fields = [
         "song_metadata", "tags", "id", "title", "artist", "album", "source",
         "source_id", "path", "file_name", "notes", "lyrics",
-        "added_time", "duration",
+        "added_time", "duration", "play_count",
     ];
     for f in &fields {
         if f.starts_with(&prefix) {
@@ -91,17 +93,16 @@ pub async fn autocomplete(
         }
     }
 
-    // Song title prefix matches
-    let mut title_filter = crate::infra::db::QueryFilter::default();
-    title_filter.query = Some(prefix.clone());
-    title_filter.limit = Some(limit as u64);
-    if let Ok(songs) = db.query_songs(&title_filter).await {
-        for song in &songs {
+    // Song title prefix matches. Use the same prefix-matching query as the
+    // editor so a large library cannot hide later titles behind a LIMIT filled
+    // with unrelated substring hits.
+    if let Ok(titles) = db.query_field_values("title", &prefix, limit).await {
+        for title in titles {
             if suggestions.len() >= limit {
                 break;
             }
             // Keep a title containing quotes/backslashes a valid query string.
-            let escaped = song.title.replace('\\', "\\\\").replace('"', "\\\"");
+            let escaped = title.replace('\\', "\\\\").replace('"', "\\\"");
             let s = format!("title CONTAINS \"{escaped}\"");
             if !suggestions.contains(&s) {
                 suggestions.push(s);

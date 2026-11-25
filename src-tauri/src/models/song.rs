@@ -27,6 +27,10 @@ pub struct SongMetadata {
     pub duration: Option<f64>,
     /// Remote cover URL (usually from the source platform).
     pub cover_url: Option<String>,
+    /// Number of times playback was started for this song. Mirrored from the
+    /// songs.play_count column (the column is authoritative).
+    #[serde(default)]
+    pub play_count: u64,
 
     // User overrides
     pub file_name: Option<String>,

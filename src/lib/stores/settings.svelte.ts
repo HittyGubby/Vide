@@ -26,6 +26,8 @@ class SettingsStore {
     shortcuts: defaultShortcuts(),
     seek_step_secs: 5,
     volume_step: 5,
+    volume: 80,
+    muted: false,
     scan_extensions: ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma", "ape", "aiff", "wv"],
     skip_silence: false,
     normalize_loudness: false,
@@ -52,6 +54,24 @@ class SettingsStore {
       }
       this.loaded = true;
       applyAppearance(this.settings);
+      void this.applyPlaybackPrefs();
+    }
+  }
+
+  /**
+   * Restore the saved volume/mute into the player store. The values are
+   * applied without re-persisting and without waiting for mpv: the backend
+   * also applies them to every new mpv process, so a not-yet-running player
+   * simply keeps them until playback starts.
+   */
+  private async applyPlaybackPrefs() {
+    try {
+      const { player } = await import("$lib/stores/player.svelte");
+      const volume = Number(this.settings.volume);
+      await player.setVolume(Number.isFinite(volume) ? volume : 80, false);
+      await player.setMuted(this.settings.muted === true, false);
+    } catch (e) {
+      console.debug("apply playback prefs error:", e);
     }
   }
 

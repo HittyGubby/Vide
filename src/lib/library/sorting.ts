@@ -8,6 +8,7 @@ export type LibraryColumn =
   | "artist"
   | "album"
   | "added"
+  | "plays"
   | "time";
 
 export interface QuerySort {
@@ -23,6 +24,7 @@ export const SORT_FIELD_BY_COLUMN: Record<LibraryColumn, string | null> = {
   artist: "artist",
   album: "album",
   added: "added_time",
+  plays: "play_count",
   time: "duration",
 };
 
@@ -34,6 +36,7 @@ export const COLUMN_BY_SORT_FIELD: Record<string, LibraryColumn> = {
   artist: "artist",
   album: "album",
   added_time: "added",
+  play_count: "plays",
   duration: "time",
 };
 
@@ -50,6 +53,8 @@ export function sortValue(song: Song, field: string): string | number {
       return tagText(song);
     case "duration":
       return song.metadata.duration ?? 0;
+    case "play_count":
+      return song.metadata.play_count ?? 0;
     case "added_time":
       return song.metadata.added_time ?? "";
     case "file_name":
@@ -90,6 +95,8 @@ export function compareByColumn(a: Song, b: Song, field: LibraryColumn): number 
       return (a.metadata.added_time ?? "").localeCompare(
         b.metadata.added_time ?? "",
       );
+    case "plays":
+      return (a.metadata.play_count ?? 0) - (b.metadata.play_count ?? 0);
     case "time":
       return (a.metadata.duration ?? 0) - (b.metadata.duration ?? 0);
     default:

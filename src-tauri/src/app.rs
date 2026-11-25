@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tokio::sync::Mutex;
 
@@ -14,6 +14,10 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub config: Arc<Mutex<AppConfig>>,
     pub player: Arc<Mutex<PlayerManager>>,
+    /// Published playback status, readable without the player lock. A track
+    /// that is still opening holds the lock, and status pollers must not block
+    /// on it (the UI has to switch tracks immediately).
+    pub player_status: Arc<RwLock<crate::features::player::PlaybackStatus>>,
     pub network: Arc<Mutex<NetworkManager>>,
     /// Plugin system: loaded manifests, routing table, runtime.
     #[allow(dead_code)]
@@ -73,6 +77,7 @@ impl AppState {
         let mut player_manager =
             PlayerManager::new(Some(db.clone()), plugins.clone(), data_dir);
         player_manager.restore_queue().await;
+        let player_status = player_manager.status_cache();
         let player = Arc::new(Mutex::new(player_manager));
 
         tracing::info!("AppState initialized");
@@ -81,6 +86,7 @@ impl AppState {
             db,
             config,
             player,
+            player_status,
             network,
             plugins,
         }

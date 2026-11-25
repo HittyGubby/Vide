@@ -71,28 +71,35 @@ fn build_ast(pair: Pair<Rule>) -> Result<QueryAst, ParseError> {
             build_ast(inner)
         }
         Rule::or_expr => {
-            let mut inner = pair.into_inner();
-            let first = inner.next().unwrap();
-            let mut left = build_ast(first)?;
-
-            while let Some(_op) = inner.next() {
-                let right_pair = inner.next().unwrap();
-                let right = build_ast(right_pair)?;
-                left = QueryAst::Or(Box::new(left), Box::new(right));
+            // Children alternate between operands and the (non-silent) OR
+            // keyword pairs. Implicit AND inside each operand is silent, so
+            // skipping the operator pair is all that is needed.
+            let mut left: Option<QueryAst> = None;
+            for child in pair.into_inner() {
+                if matches!(child.as_rule(), Rule::or_op) {
+                    continue;
+                }
+                let right = build_ast(child)?;
+                left = Some(match left {
+                    Some(left) => QueryAst::Or(Box::new(left), Box::new(right)),
+                    None => right,
+                });
             }
-            Ok(left)
+            left.ok_or(ParseError::Empty)
         }
         Rule::and_expr => {
-            let mut inner = pair.into_inner();
-            let first = inner.next().unwrap();
-            let mut left = build_ast(first)?;
-
-            while let Some(_op) = inner.next() {
-                let right_pair = inner.next().unwrap();
-                let right = build_ast(right_pair)?;
-                left = QueryAst::And(Box::new(left), Box::new(right));
+            let mut left: Option<QueryAst> = None;
+            for child in pair.into_inner() {
+                if matches!(child.as_rule(), Rule::and_op) {
+                    continue;
+                }
+                let right = build_ast(child)?;
+                left = Some(match left {
+                    Some(left) => QueryAst::And(Box::new(left), Box::new(right)),
+                    None => right,
+                });
             }
-            Ok(left)
+            left.ok_or(ParseError::Empty)
         }
         Rule::atom => {
             let inner = pair.into_inner().next().unwrap();
@@ -116,26 +123,59 @@ fn build_ast(pair: Pair<Rule>) -> Result<QueryAst, ParseError> {
         Rule::tag_filter => {
             let mut inner = pair.into_inner();
             let namespace = inner.next().unwrap().as_str().to_string();
-            let value = unescape(inner.next().unwrap());
+            let value = unwrap_value(inner.next().unwrap())?;
             Ok(QueryAst::TagFilter { namespace, value })
         }
         Rule::text_filter => {
-            let mut inner = pair.into_inner();
-            let field = inner.next().unwrap().as_str().to_string();
-            let value = unescape(inner.next().unwrap());
+            // Children include the atomic contains_op pair, so select by rule
+            // instead of by position.
+            let mut field = String::new();
+            let mut value = String::new();
+            for child in pair.into_inner() {
+                match child.as_rule() {
+                    Rule::field => field = child.as_str().to_string(),
+                    Rule::query_value => {
+                        let value_pair = child.into_inner().next().ok_or(ParseError::Empty)?;
+                        value = unescape(value_pair);
+                    }
+                    _ => {}
+                }
+            }
+            if field.is_empty() {
+                return Err(ParseError::Empty);
+            }
             Ok(QueryAst::TextFilter { field, value })
         }
         Rule::cmp_filter => {
             let mut inner = pair.into_inner();
             let field = inner.next().unwrap().as_str().to_string();
             let op = inner.next().unwrap().as_str().to_string();
-            let value = unescape(inner.next().unwrap());
+            let value = unwrap_value(inner.next().unwrap())?;
             Ok(QueryAst::Compare { field, op, value })
+        }
+        // A bare word is shorthand for song_metadata CONTAINS <word>, so a
+        // plain search box input matches title/artist/album like before.
+        Rule::bare_filter => {
+            let inner = pair.into_inner().next().unwrap();
+            let value = unescape(inner);
+            if value.trim().is_empty() {
+                return Err(ParseError::Empty);
+            }
+            Ok(QueryAst::TextFilter {
+                field: "song_metadata".to_string(),
+                value,
+            })
         }
         other => {
             panic!("unexpected rule: {other:?}")
         }
     }
+}
+
+/// Unwrap a tag_value/query_value pair down to its quoted or bare string.
+fn unwrap_value(pair: Pair<Rule>) -> Result<String, ParseError> {
+    let inner = pair.into_inner().next().ok_or(ParseError::Empty)?;
+    Ok(unescape(inner))
 }
 
 fn unescape(pair: Pair<Rule>) -> String {
@@ -238,6 +278,7 @@ fn get_field_value(song: &Song, field: &str) -> String {
         "lyrics" => song.metadata.lyrics.clone().unwrap_or_default(),
         "added_time" => song.metadata.added_time.clone().unwrap_or_default(),
         "duration" => song.metadata.duration.map(|d| d.to_string()).unwrap_or_default(),
+        "play_count" => song.metadata.play_count.to_string(),
         _ => String::new(),
     }
 }
@@ -283,7 +324,10 @@ fn matches(song: &Song, tag_index: &TagIndex, ast: &QueryAst) -> bool {
         }
         QueryAst::Compare { field, op, value } => {
             let left = get_field_value(song, field);
-            let numeric = matches!(field.to_lowercase().as_str(), "duration");
+            let numeric = matches!(
+                field.to_lowercase().as_str(),
+                "duration" | "play_count"
+            );
             let ordering = if numeric {
                 match (
                     left.trim().parse::<f64>(),
@@ -414,6 +458,62 @@ mod tests {
     fn empty_contains_matches_everything() {
         let songs = vec![song("1", "one", "a", "b"), song("2", "two", "c", "d")];
         assert_eq!(titles("title CONTAINS \"\"", &songs).len(), 2);
+    }
+
+    #[test]
+    fn bare_text_is_shorthand_for_song_metadata_contains() {
+        let songs = vec![song("1", "Héllo World", "Björk", "Álbum")];
+        assert_eq!(titles("hello", &songs), vec!["Héllo World"]);
+        // Whitespace separates terms and is an implicit AND, exactly like
+        // CONTAINS with both words.
+        assert_eq!(titles("hello world", &songs), vec!["Héllo World"]);
+        assert_eq!(titles("\"hello world\"", &songs), vec!["Héllo World"]);
+        assert!(titles("hello missing", &songs).is_empty());
+    }
+
+    #[test]
+    fn bare_contains_values_are_supported() {
+        let songs = vec![song("1", "Héllo", "Björk", "Álbum")];
+        assert_eq!(titles("title CONTAINS hello", &songs), vec!["Héllo"]);
+        assert_eq!(titles("artist CONTAINS bjork", &songs), vec!["Héllo"]);
+        assert_eq!(titles("title CONTAINS \"hello\"", &songs), vec!["Héllo"]);
+    }
+
+    #[test]
+    fn tag_values_keep_special_characters_and_non_ascii() {
+        use crate::models::tag::Tag;
+        let songs = vec![song("1", "one", "a", "b")];
+        let ast = parse_query("playlist:Best!").unwrap();
+        let mut tags = TagIndex::new();
+        tags.insert(
+            "1".to_string(),
+            vec![
+                Tag {
+                    namespace: "playlist".to_string(),
+                    value: "Best!".to_string(),
+                },
+                Tag {
+                    namespace: "playlist".to_string(),
+                    value: "我的歌单".to_string(),
+                },
+            ],
+        );
+        assert_eq!(evaluate(&ast, &songs, &tags).len(), 1);
+        let ast = parse_query("playlist:我的歌单").unwrap();
+        assert_eq!(evaluate(&ast, &songs, &tags).len(), 1);
+        // A leading "!" still negates: no song has genre:pop.
+        assert_eq!(evaluate(&parse_query("!genre:pop").unwrap(), &songs, &tags).len(), 1);
+    }
+
+    #[test]
+    fn boolean_keywords_are_not_swallowed_by_implicit_and() {
+        let songs = vec![
+            song("1", "alpha", "a", "b"),
+            song("2", "beta", "c", "d"),
+        ];
+        assert_eq!(titles("alpha OR beta", &songs).len(), 2);
+        assert!(titles("alpha AND beta", &songs).is_empty());
+        assert!(titles("alpha beta", &songs).is_empty());
     }
 
     #[test]

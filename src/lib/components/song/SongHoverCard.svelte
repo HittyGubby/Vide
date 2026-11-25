@@ -124,6 +124,7 @@
     <div class="kv"><span>原始艺术家</span><b>{song.artist}</b></div>
     <div class="kv"><span>原始专辑</span><b>{song.album}</b></div>
     <div class="kv"><span>时长</span><b>{formatDuration(song.metadata.duration) || "—"}</b></div>
+    <div class="kv"><span>播放次数</span><b>{song.metadata.play_count ?? 0}</b></div>
     <div class="kv"><span>添加时间</span><b>{song.metadata.added_time || "—"}</b></div>
     <div class="kv"><span>文件名</span><b>{song.metadata.file_name || "—"}</b></div>
     {#if song.metadata.display_title}

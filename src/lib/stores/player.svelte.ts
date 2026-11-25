@@ -34,36 +34,89 @@ class PlayerStore {
   elapsed = $state(0);
   duration = $state(0);
   isPlaying = $state(false);
+  /** A new track is selected and still opening (backend PlaybackState::Loading). */
+  loading = $state(false);
   speed = $state(1.0);
   volume = $state(80);
   muted = $state(false);
 
-  /** Set playback volume (0..=100) and persist to the backend (mpv). */
-  async setVolume(v: number) {
+  private volumeSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Track whose volume has already been pushed to the current mpv process. */
+  private volumeAppliedFor: string | null = null;
+
+  /**
+   * Set playback volume (0..=100) and persist it. The saved value is applied
+   * to every new mpv process, so the volume survives a restart.
+   */
+  async setVolume(v: number, persist = true) {
     this.volume = Math.max(0, Math.min(100, Math.round(v)));
     if (this.volume > 0) this.muted = false;
+    if (persist) this.scheduleVolumeSave();
     if (isBrowserClient()) {
       this.browserAudioElement().volume = this.volume / 100;
       return;
     }
     try {
       await statusInvoke("set_volume", { volume: this.volume });
+      this.volumeAppliedFor = this.mediaId;
     } catch (e) {
-      console.error("set_volume error:", e);
+      // No mpv yet (startup / loading): the value is persisted and applied
+      // when playback starts.
+      console.debug("set_volume deferred:", e);
     }
   }
 
-  /** Mute / unmute playback. */
-  async setMuted(m: boolean) {
+  /** Mute / unmute playback and persist the choice. */
+  async setMuted(m: boolean, persist = true) {
     this.muted = m;
+    if (persist) this.scheduleVolumeSave();
     if (isBrowserClient()) {
       this.browserAudioElement().muted = m;
       return;
     }
     try {
       await statusInvoke("set_mute", { muted: m });
+      this.volumeAppliedFor = this.mediaId;
     } catch (e) {
-      console.error("set_mute error:", e);
+      console.debug("set_mute deferred:", e);
+    }
+  }
+
+  /** Persist volume/mute after the slider settles (dragging fires often). */
+  private scheduleVolumeSave() {
+    if (this.volumeSaveTimer) clearTimeout(this.volumeSaveTimer);
+    this.volumeSaveTimer = setTimeout(() => {
+      this.volumeSaveTimer = undefined;
+      settingsStore.settings = {
+        ...settingsStore.settings,
+        volume: this.volume,
+        muted: this.muted,
+      };
+      void settingsStore.save();
+    }, 400);
+  }
+
+  /** Push the remembered volume to a freshly started mpv, once per track. */
+  private ensureVolumeApplied() {
+    if (!this.isPlaying || !this.mediaId) return;
+    if (this.volumeAppliedFor === this.mediaId) return;
+    this.volumeAppliedFor = this.mediaId;
+    void this.reapplyVolume();
+  }
+
+  /** Re-apply the remembered volume to a freshly spawned mpv. */
+  private async reapplyVolume() {
+    if (isBrowserClient()) {
+      const audio = this.browserAudioElement();
+      audio.volume = this.volume / 100;
+      audio.muted = this.muted;
+      return;
+    }
+    try {
+      await statusInvoke("set_volume", { volume: this.volume });
+      await statusInvoke("set_mute", { muted: this.muted });
+    } catch (e) {
+      console.debug("apply volume error:", e);
     }
   }
 
@@ -264,6 +317,8 @@ class PlayerStore {
    * Unlike the old stop_playback path, this keeps mediaId/title/artist so
    * the player bar and detail page are not reset when pausing. */
   async togglePause() {
+    // The new track is still opening; there is nothing to pause yet.
+    if (this.loading) return;
     try {
       if (isBrowserClient()) {
         const audio = this.browserAudioElement();
@@ -311,6 +366,7 @@ class PlayerStore {
         audio.removeAttribute("src");
         audio.load();
         this.isPlaying = false;
+        this.loading = false;
         this.mediaId = null;
         this.cover = null;
         this.title = "未在播放";
@@ -321,6 +377,7 @@ class PlayerStore {
       }
       await statusInvoke("stop_playback");
       this.isPlaying = false;
+      this.loading = false;
       this.mediaId = null;
       this.cover = null;
       this.title = "未在播放";
@@ -364,6 +421,78 @@ class PlayerStore {
     }
   }
 
+  /**
+   * Point the UI at the track that is about to play. Called before the
+   * backend command resolves so the bar switches immediately and its progress
+   * is frozen at 0 while the stream opens.
+   */
+  private beginTrackTransition(id: string) {
+    this.mediaId = id;
+    this.elapsed = 0;
+    this.duration = 0;
+    this.isPlaying = false;
+    this.loading = true;
+    const item = this.queue.find((entry) => entry.id === id);
+    if (item) {
+      this.title = item.title;
+      this.artist = item.artist;
+      this.album = item.album;
+      this.cover = null;
+    }
+    void this.fetchTrackMeta(id);
+  }
+
+  private async fetchTrackMeta(id: string) {
+    try {
+      const song = await invoke<{
+        title: string;
+        artist: string;
+        album: string;
+        metadata?: {
+          display_title?: string;
+          artist_override?: string;
+          album_override?: string;
+          cover_url?: string;
+        };
+      }>("get_song", { id });
+      if (!song || this.mediaId !== id) return;
+      this.title = song.metadata?.display_title ?? song.title;
+      this.artist = song.metadata?.artist_override ?? song.artist;
+      this.album = song.metadata?.album_override ?? song.album ?? "";
+      this.cover = song.metadata?.cover_url ?? null;
+    } catch {
+      /* keep the queue metadata */
+    }
+  }
+
+  /** Mirror the backend's next-track choice for an optimistic UI switch. */
+  private predictNextId(): string | null {
+    if (this.queue.length === 0) return null;
+    if (this.playMode.single) {
+      return this.mediaId ?? this.queue[this.currentIndex >= 0 ? this.currentIndex : 0]?.id ?? null;
+    }
+    if (this.playMode.shuffle) return null; // the backend picks randomly
+    if (this.currentIndex < 0) {
+      return this.playMode.reverse
+        ? this.queue[this.queue.length - 1].id
+        : this.queue[0].id;
+    }
+    let next = this.currentIndex + (this.playMode.reverse ? -1 : 1);
+    if (next < 0 || next >= this.queue.length) {
+      if (!this.playMode.repeat) return null;
+      next = this.playMode.reverse ? this.queue.length - 1 : 0;
+    }
+    return this.queue[next]?.id ?? null;
+  }
+
+  /** Mirror the backend's previous-track choice for an optimistic UI switch. */
+  private predictPrevId(): string | null {
+    if (this.queue.length === 0) return null;
+    const prev =
+      (this.currentIndex <= 0 ? this.queue.length : this.currentIndex) - 1;
+    return this.queue[prev]?.id ?? null;
+  }
+
   /** Play the next song — sequencing is decided by the Rust backend. */
   async playNext(auto = false): Promise<boolean> {
     try {
@@ -389,9 +518,12 @@ class PlayerStore {
             next = this.playMode.reverse ? this.queue.length - 1 : 0;
           }
         }
+        this.beginTrackTransition(this.queue[next].id);
         await this.playId(this.queue[next].id);
         return true;
       }
+      const predicted = this.predictNextId();
+      if (predicted) this.beginTrackTransition(predicted);
       const status = await invoke<{
         state: string;
         media_id?: string;
@@ -412,9 +544,12 @@ class PlayerStore {
       if (isRemoteClient() || isBrowserClient()) {
         if (this.queue.length === 0) return false;
         const prev = (this.currentIndex <= 0 ? this.queue.length : this.currentIndex) - 1;
+        this.beginTrackTransition(this.queue[prev].id);
         await this.playId(this.queue[prev].id);
         return true;
       }
+      const predicted = this.predictPrevId();
+      if (predicted) this.beginTrackTransition(predicted);
       const status = await invoke<{
         state: string;
         media_id?: string;
@@ -582,8 +717,10 @@ class PlayerStore {
   /** Apply a backend status snapshot to this store. */
   async _syncStatus(status: { state: string; media_id?: string; elapsed_secs?: number; duration_secs?: number }) {
     this.isPlaying = status.state === "Playing";
+    this.loading = status.state === "Loading";
     this.elapsed = status.elapsed_secs ?? this.elapsed;
-    this.duration = status.duration_secs ?? this.duration;
+    this.duration =
+      status.state === "Loading" ? (status.duration_secs ?? 0) : (status.duration_secs ?? this.duration);
     const newId = status.media_id ?? null;
     if (newId && newId !== this.mediaId) {
       this.mediaId = newId;
@@ -615,6 +752,7 @@ class PlayerStore {
     }
     // Refresh the queued index for the media id.
     this.currentIndex = this.queue.findIndex((i) => i.id === this.mediaId);
+    this.ensureVolumeApplied();
   }
 
   /** Save the current song id + position (throttled) so we can resume. */
@@ -704,11 +842,14 @@ class PlayerStore {
     duration_secs?: number;
   }) {
       this.isPlaying = status.state === "Playing";
+      this.loading = status.state === "Loading";
       this.elapsed = status.elapsed_secs ?? 0;
       // mpv reports no duration until the new file is fully opened. Keeping
       // the previous value avoids the bar disappearing and reappearing (and
-      // the resulting jump) on every track change.
-      this.duration = status.duration_secs ?? this.duration;
+      // the resulting jump) on every track change — but a new track that is
+      // still loading must start from an empty bar, not the old length.
+      this.duration =
+        status.state === "Loading" ? (status.duration_secs ?? 0) : (status.duration_secs ?? this.duration);
 
       // A remote client uses the local mpv directly, so its local queue is
       // intentionally empty. Let the frontend queue handle the natural end.
@@ -766,6 +907,7 @@ class PlayerStore {
         this.duration = 0;
         this.elapsed = 0;
       }
+      this.ensureVolumeApplied();
   }
 }
 

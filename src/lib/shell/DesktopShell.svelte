@@ -11,6 +11,7 @@
   import { settingsStore } from "$lib/stores/settings.svelte";
   import { player } from "$lib/stores/player.svelte";
   import { loadClientState, saveClientState } from "$lib/clientState";
+  import { windowGeometry } from "$lib/windowState";
 
   let { children } = $props();
 
@@ -267,35 +268,42 @@
     const appWindow = getCurrentWindow();
     let cancelled = false;
 
-    void (async () => {
-      try {
-        // SQLite is the source of truth; localStorage is only a one-time
-        // migration source for layouts saved by older builds.
-        let state = await loadClientState<Partial<WindowState>>("window.main");
-        if (!state) {
-          const legacy = localStorage.getItem(WINDOW_STATE_KEY);
-          if (legacy) {
-            state = JSON.parse(legacy) as Partial<WindowState>;
-            await saveClientState("window.main", state);
-            localStorage.removeItem(WINDOW_STATE_KEY);
+    // Restore geometry only once per session: this component remounts when
+    // returning from /player, and re-applying the saved size there made the
+    // window grow a little on every switch. The resize/move listeners below
+    // still attach on every mount.
+    if (!windowGeometry.restored) {
+      windowGeometry.restored = true;
+      void (async () => {
+        try {
+          // SQLite is the source of truth; localStorage is only a one-time
+          // migration source for layouts saved by older builds.
+          let state = await loadClientState<Partial<WindowState>>("window.main");
+          if (!state) {
+            const legacy = localStorage.getItem(WINDOW_STATE_KEY);
+            if (legacy) {
+              state = JSON.parse(legacy) as Partial<WindowState>;
+              await saveClientState("window.main", state);
+              localStorage.removeItem(WINDOW_STATE_KEY);
+            }
           }
-        }
-        if (state) localStorage.removeItem(WINDOW_STATE_KEY);
-        if (!state || cancelled) return;
+          if (state) localStorage.removeItem(WINDOW_STATE_KEY);
+          if (!state || cancelled) return;
 
-        // Size and position first: they are what the window falls back to as
-        // soon as the user restores it from maximized.
-        if (state.width && state.height) {
-          await appWindow.setSize(new LogicalSize(state.width, state.height));
+          // Size and position first: they are what the window falls back to as
+          // soon as the user restores it from maximized.
+          if (state.width && state.height) {
+            await appWindow.setSize(new LogicalSize(state.width, state.height));
+          }
+          if (typeof state.x === "number" && typeof state.y === "number") {
+            await appWindow.setPosition(new LogicalPosition(state.x, state.y));
+          }
+          if (state.maximized) await appWindow.maximize();
+        } catch {
+          /* ignore corrupt state */
         }
-        if (typeof state.x === "number" && typeof state.y === "number") {
-          await appWindow.setPosition(new LogicalPosition(state.x, state.y));
-        }
-        if (state.maximized) await appWindow.maximize();
-      } catch {
-        /* ignore corrupt state */
-      }
-    })();
+      })();
+    }
 
     const listenResize = async () => {
       const offResized = await appWindow.onResized(() => {
@@ -337,6 +345,8 @@
   .app-shell {
     display: flex;
     height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
     background: var(--color-base-100);
     color: var(--color-base-content);
   }
@@ -344,8 +354,10 @@
   .right {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
   .content {

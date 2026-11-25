@@ -5,7 +5,7 @@
   import { player } from "$lib/stores/player.svelte";
   import { openPlayer } from "$lib/player/navigation";
   import SeekBar from "$lib/components/player/SeekBar.svelte";
-  import { loadCoverWithFallback } from "$lib/cover";
+  import { coverSrc, loadCoverWithFallback } from "$lib/cover";
 
   /**
    * Phone-sized player bar: cover, title/subtitle and the two controls most
@@ -92,7 +92,7 @@
   <button class="cover" onclick={handleOpen} aria-label="播放详情">
     {#if player.cover}
       <img
-        src={player.cover}
+        src={coverSrc(player.cover)}
         alt=""
         onerror={(e) => loadCoverWithFallback(e.currentTarget as HTMLImageElement)}
       />

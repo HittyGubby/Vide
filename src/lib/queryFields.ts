@@ -14,6 +14,7 @@ export const QUERY_FIELDS = [
   "lyrics",
   "added_time",
   "duration",
+  "play_count",
 ];
 
 export const QUERY_KEYWORDS = [
